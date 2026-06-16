@@ -78,10 +78,10 @@ jobs:
           tar xzf python-ios.tar.gz -C python-ios-full
           
           echo "=== Copying needed files ==="
+          mkdir -p python-ios/lib
           # Dylib
           cp python-ios-full/Python.xcframework/ios-arm64/lib/libpython3.13.dylib python-ios/
           # Stdlib -> arrange as lib/python3.13/
-          mkdir -p python-ios/lib
           cp -R python-ios-full/Python.xcframework/ios-arm64/lib-arm64/python3.13 python-ios/lib/
           
           echo "=== Python artifacts ==="
