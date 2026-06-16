@@ -59,7 +59,7 @@ struct ContentView: View {
         TestResult(name: "🧬 dlopen 动态库执行", 
                    description: "v6: 嵌入.dylib→dlopen→dlsym调用（运行在App进程内）"),
         TestResult(name: "🐍 Python 引擎",
-                   description: "v8: dlopen libpython3.13→Py_Initialize→执行Python代码"),
+                   description: "v9: dlopen libpython3.13→Py_Initialize→执行Python代码"),
     ]
     @State private var isRunningAll = false
     
@@ -754,9 +754,9 @@ with open('/tmp/py_engine_test.txt', 'w') as f:
         Py_FinalizeEx()
         details.append("🔚 Py_FinalizeEx 完成")
         
-        // Cleanup
+        // Cleanup: delete crash log on success so restart doesn't show false error
         dlclose(pyHandle)
-        try? "SUCCESS".write(toFile: crashLogPath, atomically: true, encoding: .utf8)
+        try? FileManager.default.removeItem(atPath: crashLogPath)
         
         let hasOutput = details.contains(where: { $0.contains("PY_OK") })
         return (hasOutput, details.joined(separator: "\n"))
