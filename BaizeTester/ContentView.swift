@@ -567,8 +567,11 @@ struct ContentView: View {
         var details: [String] = []
         
         let bundlePath = Bundle.main.bundlePath
+        // dylib install name: @rpath/Python.framework/Python
+        // rpath: @executable_path/Frameworks
+        // resolved path: {APP}/Frameworks/Python.framework/Python
         let frameworksPath = bundlePath + "/Frameworks"
-        let pyDylib = frameworksPath + "/libpython3.13.dylib"
+        let pyDylib = frameworksPath + "/Python.framework/Python"
         let stdlibPath = bundlePath + "/lib/python3.13"
         
         details.append("📦 Bundle: \(String(bundlePath.suffix(40)))")

@@ -111,16 +111,19 @@ jobs:
           cp -v baize_v2 "$APP_PATH/"
           cp -v libbaize_v2.dylib "$APP_PATH/"
           
-          # Embed ALL Python dylibs into Frameworks/ so dyld finds them at launch
-          echo "=== Embedding Python dylibs in Frameworks/ ==="
-          mkdir -p "$APP_PATH/Frameworks"
-          cp -v python-ios/*.dylib "$APP_PATH/Frameworks/"
+          # Embed Python dylib with CORRECT framework layout
+          # libpython3.13.dylib install name: @rpath/Python.framework/Python
+          # dyld resolves: @rpath/Python.framework/Python
+          #   → @executable_path/Frameworks/Python.framework/Python
+          #   → {APP}/Frameworks/Python.framework/Python  ← MUST match this path!
+          echo "=== Embedding Python dylib (framework layout) ==="
+          mkdir -p "$APP_PATH/Frameworks/Python.framework"
+          cp -v python-ios/libpython3.13.dylib "$APP_PATH/Frameworks/Python.framework/Python"
           
-          echo "=== Dylib dependencies (debug) ==="
-          for dylib in "$APP_PATH/Frameworks"/*.dylib; do
-            echo "--- $(basename "$dylib") ---"
-            otool -L "$dylib" 2>/dev/null | head -10
-          done
+          echo "=== Dylib install name (verify) ==="
+          otool -D "$APP_PATH/Frameworks/Python.framework/Python"
+          echo "=== Dylib dependencies ==="
+          otool -L "$APP_PATH/Frameworks/Python.framework/Python" | head -10
           
           # Copy stdlib
           echo "=== Embedding Python stdlib ==="
@@ -147,12 +150,9 @@ jobs:
           ldid2 -S "$APP_PATH/baize_v2" || echo "WARN: baize_v2 signing failed"
           ldid2 -S "$APP_PATH/libbaize_v2.dylib" || echo "WARN: libbaize_v2 signing failed"
           
-          # Sign ALL Python dylibs in Frameworks/
-          echo "=== Signing Python dylibs ==="
-          for dylib in "$APP_PATH/Frameworks"/*.dylib; do
-            echo "Signing: $(basename "$dylib")"
-            ldid2 -S "$dylib" || echo "WARN: failed to sign $(basename "$dylib")"
-          done
+          # Sign Python dylib (framework layout)
+          echo "=== Signing Python dylib ==="
+          ldid2 -S "$APP_PATH/Frameworks/Python.framework/Python" || echo "WARN: Python dylib signing failed"
           
           # Sign Python .so extensions
           echo "=== Signing .so extensions ==="
