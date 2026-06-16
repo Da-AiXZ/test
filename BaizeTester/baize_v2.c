@@ -2,6 +2,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
+#include <sys/stat.h>
 
 // All output via stdout (printf) so parent can capture via pipe
 #define SAY(fmt, ...) printf(fmt "\n", ##__VA_ARGS__); fflush(stdout)
