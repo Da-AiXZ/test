@@ -70,9 +70,11 @@ struct ContentView: View {
                         .bold()
                         .padding(.top, 8)
                     
-                    ForEach($testResults) { $result in
-                        TestResultCard(result: $result) {
-                            runTest($result)
+                    ForEach(testResults.indices, id: \.self) { i in
+                        TestResultCard(result: $testResults[i]) {
+                            DispatchQueue.global(qos: .userInitiated).async {
+                                runTestSync(i)
+                            }
                         }
                     }
                     
@@ -256,7 +258,7 @@ struct ContentView: View {
         let argv = args.map { $0.withCString { strdup($0) } }
         defer { argv.forEach { free($0) } }
         
-        var cargv = argv.map { UnsafeMutablePointer<CChar>?($0) }
+        var cargv: [UnsafeMutablePointer<CChar>?] = argv.map { UnsafeMutablePointer<CChar>($0) }
         cargv.append(nil)
         
         let ret = posix_spawn(&pid, command, nil, nil, &cargv, nil)
@@ -335,22 +337,37 @@ struct ContentView: View {
     // MARK: - Test 5: System Call
     
     func testSystemCall() -> (Bool, String) {
-        // Use system() to execute a simple command
-        let testCmd = "echo 'BAIZE_TEST_OK' > /tmp/baize_system_test.txt"
-        let ret = system(testCmd)
+        // system() is unavailable on iOS; use posix_spawn with /bin/sh
+        let testCmd = "/bin/sh"
+        let testArg = "-c"
+        let shellCmd = "echo BAIZE_TEST_OK > /tmp/baize_system_test.txt"
+        let args = [testCmd, testArg, shellCmd]
+        
+        var pid: pid_t = 0
+        let argv = args.map { $0.withCString { strdup($0) } }
+        defer { argv.forEach { free($0) } }
+        
+        var cargv: [UnsafeMutablePointer<CChar>?] = argv.map { UnsafeMutablePointer<CChar>($0) }
+        cargv.append(nil)
+        
+        let ret = posix_spawn(&pid, testCmd, nil, nil, &cargv, nil)
         
         if ret == 0 {
+            var status: Int32 = 0
+            waitpid(pid, &status, 0)
+            let exitCode = WEXITSTATUS(status)
+            
             // Verify the file was created
             let outputPath = "/tmp/baize_system_test.txt"
             if let content = try? String(contentsOfFile: outputPath, encoding: .utf8) {
-                // Clean up
                 try? FileManager.default.removeItem(atPath: outputPath)
-                return (true, "✅ system() 调用成功，输出: \(content.trimmingCharacters(in: .whitespacesAndNewlines))")
+                return (true, "✅ Shell 执行成功 (exit: \(exitCode)), 输出: \(content.trimmingCharacters(in: .whitespacesAndNewlines))")
             } else {
-                return (false, "⚠️ system() 返回成功但无法读取输出文件")
+                return (false, "⚠️ 进程创建成功但未生成输出文件 (exit: \(exitCode))")
             }
         } else {
-            return (false, "❌ system() 返回错误: \(ret)")
+            let errorMsg = String(cString: strerror(ret))
+            return (false, "❌ Shell 执行失败: \(errorMsg) (errno: \(ret))")
         }
     }
 }
