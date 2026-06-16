@@ -449,6 +449,24 @@ struct ContentView: View {
             details.append("⚠️ /var/mobile/Documents/baize_v2_test.txt 不存在")
         }
         
+        // Check alternative paths
+        let testFile3 = "/private/tmp/baize_v2_test.txt"
+        if let content = try? String(contentsOfFile: testFile3, encoding: .utf8) {
+            details.append("✅ /private/tmp/baize_v2_test.txt: \(content.trimmingCharacters(in: .whitespacesAndNewlines))")
+            try? FileManager.default.removeItem(atPath: testFile3)
+        } else {
+            details.append("⚠️ /private/tmp/baize_v2_test.txt 不存在")
+        }
+        
+        // Check debug log
+        let debugLog = "/tmp/baize_v2_debug.txt"
+        if let content = try? String(contentsOfFile: debugLog, encoding: .utf8) {
+            details.append("📋 调试日志:\n\(content.trimmingCharacters(in: .whitespacesAndNewlines))")
+            try? FileManager.default.removeItem(atPath: debugLog)
+        } else {
+            details.append("⚠️ /tmp/baize_v2_debug.txt 不存在（无法获取调试信息）")
+        }
+        
         // Cleanup
         try? FileManager.default.removeItem(atPath: tmpBinary)
         
