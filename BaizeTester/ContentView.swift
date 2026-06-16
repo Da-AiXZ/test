@@ -56,6 +56,8 @@ struct ContentView: View {
                    description: "测试能否用 system() 执行 shell 命令"),
         TestResult(name: "⚡ 自备二进制执行", 
                    description: "v2: 嵌入C程序→复制到/tmp/→chmod→posix_spawn执行"),
+        TestResult(name: "🧬 dlopen 动态库执行", 
+                   description: "v6: 嵌入.dylib→dlopen→dlsym调用（运行在App进程内）"),
     ]
     @State private var isRunningAll = false
     
@@ -204,6 +206,7 @@ struct ContentView: View {
         case 3: detail = testFileWrite()
         case 4: detail = testSystemCall()
         case 5: detail = testSelfContainedBinary()
+        case 6: detail = testDylibExecution()
         default: detail = (false, "Unknown test")
         }
         
@@ -430,36 +433,130 @@ struct ContentView: View {
         waitpid(pid, &status, 0)
         let rawExit = WEXITSTATUS(status)
         let fullStatus = status
-        details.append("🟢 子进程退出 (PID: \(pid), raw_exit=\(rawExit), full_status=\(fullStatus))")
         
-        // Step 6: Decode exit code (v5 bitmask)
-        let exitCode = Int(rawExit)
-        if exitCode == 0 {
-            details.append("🔴 exit=0 → 所有测试都失败了！")
-            details.append("   子进程连最基本的 fopen 都无法执行")
+        // Check HOW the process ended
+        if WIFSIGNALED(status) {
+            let sig = WTERMSIG(status)
+            let sigName: String
+            switch sig {
+            case 9:  sigName = "SIGKILL"     // ⚠️ 被系统强制杀死
+            case 6:  sigName = "SIGABRT"
+            case 11: sigName = "SIGSEGV"
+            case 4:  sigName = "SIGILL"
+            case 5:  sigName = "SIGTRAP"
+            default: sigName = "SIGNAL(\(sig))"
+            }
+            details.append("💀 子进程被信号杀死: \(sigName) (sig=\(sig), full_status=\(fullStatus))")
+            details.append("   这表示 iOS 系统阻止了未签名二进制执行！")
+        } else if WIFEXITED(status) {
+            let exitCode = Int(rawExit)
+            details.append("🟢 子进程正常退出 (PID: \(pid), exit=\(exitCode))")
+            
+            // Decode exit code (v5 bitmask)
+            if exitCode == 0 {
+                details.append("🔴 exit=0 → 所有测试都失败了")
+            } else {
+                details.append("--- 位掩码解码 ---")
+                if exitCode & 1  != 0 { details.append("  ✅ bit0: /tmp/ 可写") }
+                else                 { details.append("  ❌ bit0: /tmp/ 不可写") }
+                if exitCode & 2  != 0 { details.append("  ✅ bit1: /var/mobile/Documents/ 可写") }
+                else                 { details.append("  ❌ bit1: /var/mobile/Documents/ 不可写") }
+                if exitCode & 4  != 0 { details.append("  ✅ bit2: /private/tmp/ 可写") }
+                else                 { details.append("  ❌ bit2: /private/tmp/ 不可写") }
+                if exitCode & 8  != 0 { details.append("  ✅ bit3: access(W_OK) 通过") }
+                else                 { details.append("  ❌ bit3: access(W_OK) 失败") }
+                if exitCode & 16 != 0 { details.append("  ✅ bit4: mkdir 成功") }
+                else                 { details.append("  ❌ bit4: mkdir 失败") }
+                if exitCode & 32 != 0 { details.append("  ✅ bit5: getcwd 成功") }
+                else                 { details.append("  ❌ bit5: getcwd 失败") }
+                if exitCode & 64 != 0 { details.append("  ✅ bit6: 程序运行到末尾") }
+                else                 { details.append("  ❌ bit6: 程序未运行到末尾") }
+            }
         } else {
-            details.append("--- 位掩码解码 ---")
-            if exitCode & 1  != 0 { details.append("  ✅ bit0: /tmp/ 可写 (fopen成功)") }
-            else                 { details.append("  ❌ bit0: /tmp/ 不可写") }
-            if exitCode & 2  != 0 { details.append("  ✅ bit1: /var/mobile/Documents/ 可写") }
-            else                 { details.append("  ❌ bit1: /var/mobile/Documents/ 不可写") }
-            if exitCode & 4  != 0 { details.append("  ✅ bit2: /private/tmp/ 可写") }
-            else                 { details.append("  ❌ bit2: /private/tmp/ 不可写") }
-            if exitCode & 8  != 0 { details.append("  ✅ bit3: access(/tmp/,W_OK) 通过") }
-            else                 { details.append("  ❌ bit3: access(/tmp/,W_OK) 失败") }
-            if exitCode & 16 != 0 { details.append("  ✅ bit4: mkdir 成功") }
-            else                 { details.append("  ❌ bit4: mkdir 失败") }
-            if exitCode & 32 != 0 { details.append("  ✅ bit5: getcwd 成功") }
-            else                 { details.append("  ❌ bit5: getcwd 失败") }
-            if exitCode & 64 != 0 { details.append("  ✅ bit6: 程序运行到末尾（基本执行正常）") }
-            else                 { details.append("  ❌ bit6: 程序未运行到末尾（提前崩溃/退出）") }
+            details.append("⚠️ 子进程状态异常: \(fullStatus)")
         }
         
         // Cleanup
         try? FileManager.default.removeItem(atPath: tmpBinary)
         
-        // Success = at least bit6 (program ran to completion)
-        let success = (exitCode & 64) != 0
+        // For posix_spawn: "success" = process was NOT killed by signal
+        let success = WIFEXITED(status) && WEXITSTATUS(status) != 0
+        return (success, details.joined(separator: "\n"))
+    }
+    
+    // MARK: - Test 7: dlopen Dynamic Library
+    
+    func testDylibExecution() -> (Bool, String) {
+        var details: [String] = []
+        
+        // Step 1: Find dylib in bundle
+        guard let bundlePath = Bundle.main.resourcePath else {
+            return (false, "❌ 无法获取 Bundle resource path")
+        }
+        let dylibPath = bundlePath + "/libbaize_v2.dylib"
+        
+        if !FileManager.default.fileExists(atPath: dylibPath) {
+            return (false, "❌ .dylib 未嵌入 App: \(String(dylibPath.suffix(35)))")
+        }
+        details.append("📦 找到 .dylib: \(String(dylibPath.suffix(30)))")
+        
+        // Step 2: Copy to /tmp/
+        let tmpDylib = "/tmp/libbaize_v2.dylib"
+        try? FileManager.default.removeItem(atPath: tmpDylib)
+        
+        do {
+            try FileManager.default.copyItem(atPath: dylibPath, toPath: tmpDylib)
+            details.append("📋 复制到 /tmp/ 成功")
+        } catch {
+            return (false, "❌ 复制 .dylib 失败: \(error.localizedDescription)")
+        }
+        
+        // Step 3: dlopen
+        guard let handle = dlopen(tmpDylib, RTLD_NOW) else {
+            let err = dlerror().map { String(cString: $0) } ?? "未知错误"
+            try? FileManager.default.removeItem(atPath: tmpDylib)
+            return (false, "❌ dlopen 失败: \(err)")
+        }
+        details.append("🔓 dlopen 成功")
+        defer { dlclose(handle) }
+        
+        // Step 4: dlsym → baize_v2_test()
+        guard let sym = dlsym(handle, "baize_v2_test") else {
+            let err = dlerror().map { String(cString: $0) } ?? "符号未找到"
+            return (false, "❌ dlsym('baize_v2_test') 失败: \(err)")
+        }
+        details.append("🔍 dlsym 成功 → 函数指针: \(sym)")
+        
+        // Step 5: Call the function
+        typealias TestFunc = @convention(c) () -> Int32
+        let testFunc = unsafeBitCast(sym, to: TestFunc.self)
+        let result = testFunc()
+        details.append("🟢 baize_v2_test() 返回: \(result)")
+        
+        // Step 6: Decode result (same bitmask as v5)
+        if result == 0 {
+            details.append("🔴 result=0 → 所有测试都失败了")
+        } else {
+            if result & 1  != 0 { details.append("  ✅ /tmp/ 可写") }
+            else               { details.append("  ❌ /tmp/ 不可写") }
+            if result & 2  != 0 { details.append("  ✅ /var/mobile/Documents/ 可写") }
+            else               { details.append("  ❌ /var/mobile/Documents/ 不可写") }
+            if result & 4  != 0 { details.append("  ✅ /private/tmp/ 可写") }
+            else               { details.append("  ❌ /private/tmp/ 不可写") }
+            if result & 8  != 0 { details.append("  ✅ access(W_OK) 通过") }
+            else               { details.append("  ❌ access(W_OK) 失败") }
+            if result & 16 != 0 { details.append("  ✅ mkdir 成功") }
+            else               { details.append("  ❌ mkdir 失败") }
+            if result & 32 != 0 { details.append("  ✅ getcwd 成功") }
+            else               { details.append("  ❌ getcwd 失败") }
+            if result & 64 != 0 { details.append("  ✅ 函数运行到末尾") }
+            else               { details.append("  ❌ 函数未运行到末尾") }
+        }
+        
+        // Cleanup
+        try? FileManager.default.removeItem(atPath: tmpDylib)
+        
+        let success = (result & 64) != 0
         return (success, details.joined(separator: "\n"))
     }
 }
@@ -512,6 +609,18 @@ struct TestResultCard: View {
 
 // MARK: - C Function Declarations
 
+func WIFEXITED(_ status: Int32) -> Bool {
+    return (status & 0x7F) == 0
+}
+
+func WIFSIGNALED(_ status: Int32) -> Bool {
+    return ((status & 0x7F) + 1) >> 1 > 0
+}
+
 func WEXITSTATUS(_ status: Int32) -> Int32 {
     return (status >> 8) & 0xFF
+}
+
+func WTERMSIG(_ status: Int32) -> Int32 {
+    return status & 0x7F
 }

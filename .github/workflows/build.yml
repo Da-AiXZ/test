@@ -46,13 +46,26 @@ jobs:
       - name: Cross-compile baize_v2
         run: |
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          # v5: executable (posix_spawn test)
           xcrun clang -arch arm64 \
             -isysroot "$SDK" \
             -miphoneos-version-min=15.0 \
             -o baize_v2 \
             BaizeTester/baize_v2.c
+          echo "=== baize_v2 ==="
           file baize_v2
           ls -la baize_v2
+          
+          # v6: dylib (dlopen test - runs in App process!)
+          xcrun clang -arch arm64 \
+            -isysroot "$SDK" \
+            -miphoneos-version-min=15.0 \
+            -shared \
+            -o libbaize_v2.dylib \
+            BaizeTester/baize_v2_lib.c
+          echo "=== libbaize_v2.dylib ==="
+          file libbaize_v2.dylib
+          ls -la libbaize_v2.dylib
       
       - name: Package IPA
         run: |
@@ -67,26 +80,30 @@ jobs:
           echo "=== .app contents ==="
           ls -la "$APP_PATH/"
           
-          # 把交叉编译的 baize_v2 放入 .app bundle
-          echo "=== Embedding baize_v2 ==="
+          # Embed baize_v2 executable + dylib
+          echo "=== Embedding binaries ==="
           cp baize_v2 "$APP_PATH/"
-          ls -la "$APP_PATH/baize_v2"
+          cp libbaize_v2.dylib "$APP_PATH/"
+          ls -la "$APP_PATH/baize_v2" "$APP_PATH/libbaize_v2.dylib"
           
-          # 伪签名主二进制
+          # Sign main binary
           echo "=== Signing main binary ==="
           ldid2 -SBaizeTester/Entitlements.plist "$APP_PATH/BaizeTester"
           echo "ldid2 exit: $?"
           
-          # 伪签名 baize_v2（TrollStore 可能需要）
+          # Sign baize_v2 (for posix_spawn test - though we now know it gets SIGKILL'd)
           echo "=== Signing baize_v2 ==="
           ldid2 -S "$APP_PATH/baize_v2"
-          echo "ldid2 baize_v2 exit: $?"
           
-          # 验证签名
+          # Sign dylib (for dlopen test - runs in-process, inherits entitlements)
+          echo "=== Signing libbaize_v2.dylib ==="
+          ldid2 -S "$APP_PATH/libbaize_v2.dylib"
+          
+          # Verify
           echo "=== Verify ==="
           ldid2 -e "$APP_PATH/BaizeTester" 2>&1 | head -20
           
-          # 打包IPA
+          # Package IPA
           mkdir -p Payload
           rm -rf Payload/BaizeTester.app
           cp -R "$APP_PATH" Payload/
