@@ -73,26 +73,26 @@ jobs:
           curl -L -o python-ios.tar.gz \
             "https://github.com/beeware/Python-Apple-support/releases/download/3.13-b14/Python-3.13-iOS-support.b14.tar.gz"
           
-          echo "=== Extracting ==="
-          mkdir -p python-ios
-          tar xzf python-ios.tar.gz --strip-components=3 -C python-ios \
-            Python.xcframework/ios-arm64/lib/libpython3.13.dylib \
-            Python.xcframework/ios-arm64/lib-arm64/python3.13/
+          echo "=== Extracting full tarball ==="
+          mkdir -p python-ios-full
+          tar xzf python-ios.tar.gz -C python-ios-full
           
-          # Rename stdlib dir so Python finds it at {home}/lib/python3.13/
-          # PYTHONHOME = app bundle, Python looks for {PYTHONHOME}/lib/python3.13/
+          echo "=== Copying needed files ==="
+          # Dylib
+          cp python-ios-full/Python.xcframework/ios-arm64/lib/libpython3.13.dylib python-ios/
+          # Stdlib -> arrange as lib/python3.13/
           mkdir -p python-ios/lib
-          mv python-ios/python3.13 python-ios/lib/
+          cp -R python-ios-full/Python.xcframework/ios-arm64/lib-arm64/python3.13 python-ios/lib/
           
           echo "=== Python artifacts ==="
           ls -lh python-ios/libpython3.13.dylib
-          ls python-ios/lib/python3.13/ | head -10
-          echo "  ... ($(find python-ios/lib/python3.13 -type f | wc -l) files total)"
+          echo "Stdlib files: $(find python-ios/lib/python3.13 -type f | wc -l)"
           du -sh python-ios/
       
       - name: Package IPA
         run: |
-          set -e
+          set -ex
+          trap 'echo "FAILED at line $LINENO: $BASH_COMMAND"' ERR
           APP_PATH="./build/BaizeTester.xcarchive/Products/Applications/BaizeTester.app"
           
           if [ ! -d "$APP_PATH" ]; then
