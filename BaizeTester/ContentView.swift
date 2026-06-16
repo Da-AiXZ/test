@@ -558,6 +558,10 @@ struct ContentView: View {
     }
     
     // MARK: - Test 8: Python Engine
+    // libpython3.13.dylib is LINKED AT BUILD TIME (not dlopen'd at runtime).
+    // dyld loads it automatically at app launch, resolving all @rpath
+    // dependencies through @executable_path/Frameworks.
+    // dlopen below just returns the already-loaded handle (no-op).
     
     func testPythonEngine() -> (Bool, String) {
         var details: [String] = []
@@ -578,6 +582,8 @@ struct ContentView: View {
             for d in dylibs.sorted() {
                 details.append("   \(d)")
             }
+        } else {
+            details.append("❌ Frameworks/ 目录不存在 — dylib 依赖将无法解析")
         }
         
         // 2. Check main dylib
@@ -597,36 +603,20 @@ struct ContentView: View {
         details.append("   os.py: \(hasOs ? "✅" : "❌")")
         details.append("   site.py: \(hasSite ? "✅" : "❌")")
         
-        // 4. Pre-load all dylibs that libpython might depend on
-        let candidates = ["libffi.dylib", "libssl.dylib", "libcrypto.dylib", "liblzma.dylib", "libsqlite3.dylib", "libbz2.dylib", "libncurses.dylib", "libpanel.dylib"]
-        var preloaded: [String: UnsafeMutableRawPointer] = [:]
-        for dylibName in candidates {
-            let path = frameworksPath + "/" + dylibName
-            if FileManager.default.fileExists(atPath: path) {
-                if let h = dlopen(path, RTLD_NOW | RTLD_GLOBAL) {
-                    preloaded[dylibName] = h
-                } else {
-                    let err = dlerror().map { String(cString: $0) } ?? "?"
-                    details.append("⚠️ 预加载 \(dylibName) 失败: \(err)")
-                }
-            }
-        }
-        details.append("🔗 预加载了 \(preloaded.count)/\(candidates.count) 个依赖 dylib")
-        
-        // ---- Main dlopen ----
-        
-        // Step 5: dlopen libpython (RTLD_NOW | RTLD_GLOBAL)
+        // ---- Get Python handle ----
+        // The dylib was already loaded by dyld at app launch (linked at build time).
+        // dlopen returns the existing handle. RTLD_NOLOAD would also work,
+        // but RTLD_NOW|RTLD_GLOBAL is safer as fallback if dyld didn't preload.
         details.append("🔧 正在 dlopen libpython3.13.dylib...")
+        details.append("   (dylib 已在启动时由 dyld 自动加载，dlopen 仅获取句柄)")
+        
         guard let pyHandle = dlopen(pyDylib, RTLD_NOW | RTLD_GLOBAL) else {
             let err = dlerror().map { String(cString: $0) } ?? "未知"
-            // Cleanup preloaded dylibs
-            for (_, h) in preloaded { dlclose(h) }
             return (false, "❌ dlopen libpython 失败: \(err)\n\(details.joined(separator: "\n"))")
         }
-        details.append("🔓 dlopen 成功")
-        // deferred: close pyHandle + preloaded dylibs at end
+        details.append("🔓 获取 Python 句柄成功")
         
-        // Step 6: dlsym Python C API functions
+        // Step 4: dlsym Python C API functions
         typealias VoidFunc = @convention(c) () -> Void
         typealias IntFunc = @convention(c) () -> Int32
         typealias IntStrFunc = @convention(c) (UnsafePointer<CChar>) -> Int32
@@ -660,7 +650,7 @@ struct ContentView: View {
         
         details.append("🔍 dlsym 6个 API 全部成功")
         
-        // Step 7: Set Python environment variables
+        // Step 5: Set Python environment variables
         setenv("PYTHONHOME", bundlePath, 1)
         setenv("PYTHONPATH", stdlibPath, 1)
         setenv("PYTHONDONTWRITEBYTECODE", "1", 1)
@@ -669,7 +659,7 @@ struct ContentView: View {
         details.append("🏠 PYTHONHOME=\(String(bundlePath.suffix(35)))")
         details.append("📂 PYTHONPATH=lib/python3.13")
         
-        // Step 8: Initialize Python
+        // Step 6: Initialize Python
         details.append("🚀 正在 Py_Initialize()...")
         Py_Initialize()
         
@@ -678,11 +668,11 @@ struct ContentView: View {
         }
         details.append("✅ Py_Initialize 成功")
         
-        // Step 9: Get version
+        // Step 7: Get version
         let version = String(cString: Py_GetVersion())
         details.append("🐍 版本: \(version)")
         
-        // Step 10: Run Python code that writes output to a file
+        // Step 8: Run Python code that writes output to a file
         let testScript = """
 import sys, os
 ver = sys.version
@@ -712,7 +702,7 @@ with open('/tmp/py_engine_test.txt', 'w') as f:
         }
         details.append("✅ Python 脚本执行成功 (rc=0)")
         
-        // Step 11: Read output file
+        // Step 9: Read output file
         let outputPath = "/tmp/py_engine_test.txt"
         if let output = try? String(contentsOfFile: outputPath, encoding: .utf8) {
             details.append("--- Python 输出 ---")
@@ -727,14 +717,13 @@ with open('/tmp/py_engine_test.txt', 'w') as f:
             details.append("⚠️ 输出文件不存在（Python 可能无权写入 /tmp/）")
         }
         
-        // Step 12: Finalize
+        // Step 10: Finalize
         Py_FinalizeEx()
         details.append("🔚 Py_FinalizeEx 完成")
         
-        // Cleanup: close main handle + preloaded dylibs
+        // Cleanup
         dlclose(pyHandle)
-        for (_, h) in preloaded { dlclose(h) }
-        details.append("🧹 dylib 清理完成")
+        details.append("🧹 dylib 句柄已释放")
         
         let hasOutput = details.contains(where: { $0.contains("PY_OK") })
         return (hasOutput, details.joined(separator: "\n"))
