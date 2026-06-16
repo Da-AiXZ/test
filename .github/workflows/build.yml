@@ -27,11 +27,18 @@ jobs:
           echo "=== Checking xcschemes ==="
           find BaizeTester.xcodeproj -name "*.xcscheme" 2>/dev/null || echo "No schemes found!"
       
+      - name: Show Xcode version
+        run: |
+          xcodebuild -version
+          xcrun --show-sdk-version -sdk iphoneos
+      
       - name: Build IPA
         run: |
+          set -o pipefail
+          
           # 先验证 xcodebuild 能否读取项目
           echo "=== Verify project readability ==="
-          xcodebuild -project BaizeTester.xcodeproj -list 2>&1 || true
+          xcodebuild -project BaizeTester.xcodeproj -list
           
           # 编译
           echo "=== Building archive ==="
@@ -43,8 +50,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            ONLY_ACTIVE_ARCH=NO \
-            2>&1 | tail -50
+            ONLY_ACTIVE_ARCH=NO
       
       - name: Package IPA
         run: |
