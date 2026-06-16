@@ -111,6 +111,9 @@ jobs:
           cp -v libbaize_v2.dylib "$APP_PATH/"
           
           # Embed ALL Python dylibs + stdlib
+          # Strategy: put dylibs in Frameworks/, add @executable_path/Frameworks
+          # to main binary rpath. This lets @rpath/libxyz.dylib resolve naturally
+          # WITHOUT modifying the dylibs themselves (which corrupts code signatures)
           echo "=== Embedding Python ==="
           if [ ! -f python-ios/libpython3.13.dylib ]; then
             echo "ERROR: python-ios/libpython3.13.dylib not found"
@@ -118,9 +121,18 @@ jobs:
             exit 1
           fi
           
-          # Copy ALL framework dylibs (libffi, libssl, libcrypto, etc.)
-          cp -v python-ios/*.dylib "$APP_PATH/"
+          # Copy ALL framework dylibs into Frameworks/
+          mkdir -p "$APP_PATH/Frameworks"
+          cp -v python-ios/*.dylib "$APP_PATH/Frameworks/"
           
+          # Show dylib deps (for debug) — DO NOT modify them
+          echo "=== Dylib dependencies (read-only) ==="
+          for dylib in "$APP_PATH/Frameworks"/*.dylib; do
+            echo "--- $(basename "$dylib") ---"
+            otool -L "$dylib" 2>/dev/null | head -15
+          done
+          
+          # Copy stdlib
           if [ ! -d python-ios/lib/python3.13 ]; then
             echo "ERROR: python-ios/lib/python3.13 not found"
             find python-ios -type d | head -10
@@ -129,35 +141,15 @@ jobs:
           cp -R python-ios/lib "$APP_PATH/"
           echo "Python stdlib: $(find "$APP_PATH/lib/python3.13" -type f 2>/dev/null | wc -l) files"
           
-          # CRITICAL: Fix dylib install names to use @loader_path
-          # Without this, dyld can't find dependencies → instant crash
-          echo "=== Fixing dylib install names ==="
-          cd "$APP_PATH"
-          for dylib in *.dylib; do
-            echo "--- $dylib ---"
-            # Show current ID and dependencies
-            otool -L "$dylib" | head -20
-            # Change dylib's own install name to @loader_path
-            install_name_tool -id "@loader_path/$dylib" "$dylib" 2>/dev/null || echo "  (id change skipped)"
-            # Change all @rpath/ dependencies to @loader_path/
-            for dep in $(otool -L "$dylib" | grep '@rpath/' | awk '{print $1}'); do
-              dep_name=$(basename "$dep")
-              echo "  Changing $dep → @loader_path/$dep_name"
-              install_name_tool -change "$dep" "@loader_path/$dep_name" "$dylib"
-            done
-          done
-          echo "=== Fixed dylib dependencies ==="
-          for dylib in *.dylib; do
-            echo "--- $dylib ---"
-            otool -L "$dylib" | head -20
-          done
-          cd -
+          # CRITICAL: Add rpath to main binary so @rpath references resolve
+          # to Frameworks/ directory. This is the ONLY Mach-O modification.
+          echo "=== Setting main binary rpath ==="
+          install_name_tool -add_rpath "@executable_path/Frameworks" "$APP_PATH/BaizeTester" 2>/dev/null || echo "WARN: rpath may already exist"
+          echo "Main binary rpath:"
+          otool -l "$APP_PATH/BaizeTester" | grep -A2 LC_RPATH
           
-          # Sign main binary
-          echo "=== Adding rpath + signing main binary ==="
-          # Add @executable_path to rpath so it can find dylibs in app root
-          install_name_tool -add_rpath "@executable_path" "$APP_PATH/BaizeTester" 2>/dev/null || echo "WARN: rpath add failed (may already exist)"
-          otool -l "$APP_PATH/BaizeTester" | grep -A2 LC_RPATH || echo "  (no LC_RPATH)"
+          # Sign main binary (AFTER rpath change)
+          echo "=== Signing main binary ==="
           ldid2 -SBaizeTester/Entitlements.plist "$APP_PATH/BaizeTester" || { echo "FATAL: main binary signing failed"; exit 1; }
           
           # Sign embedded binaries
@@ -165,9 +157,10 @@ jobs:
           ldid2 -S "$APP_PATH/baize_v2" || echo "WARN: baize_v2 signing failed"
           ldid2 -S "$APP_PATH/libbaize_v2.dylib" || echo "WARN: libbaize_v2 signing failed"
           
-          # Sign ALL Python dylibs (not just libpython3.13)
+          # Sign ALL Python dylibs in Frameworks/
+          # Use ldid2 on the ORIGINAL dylibs (never modified by install_name_tool)
           echo "=== Signing all Python dylibs ==="
-          for dylib in "$APP_PATH"/*.dylib; do
+          for dylib in "$APP_PATH/Frameworks"/*.dylib; do
             echo "Signing: $(basename "$dylib")"
             ldid2 -S "$dylib" || echo "WARN: failed to sign $(basename "$dylib")"
           done

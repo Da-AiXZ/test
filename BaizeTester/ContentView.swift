@@ -563,17 +563,18 @@ struct ContentView: View {
         var details: [String] = []
         
         let bundlePath = Bundle.main.bundlePath
-        let pyDylib = bundlePath + "/libpython3.13.dylib"
+        let frameworksPath = bundlePath + "/Frameworks"
+        let pyDylib = frameworksPath + "/libpython3.13.dylib"
         let stdlibPath = bundlePath + "/lib/python3.13"
         
         details.append("📦 Bundle: \(String(bundlePath.suffix(40)))")
         
         // ---- Pre-flight checks ----
         
-        // 1. List all dylibs in bundle
-        if let allFiles = try? FileManager.default.contentsOfDirectory(atPath: bundlePath) {
+        // 1. List all dylibs in Frameworks/
+        if let allFiles = try? FileManager.default.contentsOfDirectory(atPath: frameworksPath) {
             let dylibs = allFiles.filter { $0.hasSuffix(".dylib") }
-            details.append("🧬 发现 \(dylibs.count) 个 dylib:")
+            details.append("🧬 Frameworks/ 发现 \(dylibs.count) 个 dylib:")
             for d in dylibs.sorted() {
                 details.append("   \(d)")
             }
@@ -600,7 +601,7 @@ struct ContentView: View {
         let candidates = ["libffi.dylib", "libssl.dylib", "libcrypto.dylib", "liblzma.dylib", "libsqlite3.dylib", "libbz2.dylib", "libncurses.dylib", "libpanel.dylib"]
         var preloaded: [String: UnsafeMutableRawPointer] = [:]
         for dylibName in candidates {
-            let path = bundlePath + "/" + dylibName
+            let path = frameworksPath + "/" + dylibName
             if FileManager.default.fileExists(atPath: path) {
                 if let h = dlopen(path, RTLD_NOW | RTLD_GLOBAL) {
                     preloaded[dylibName] = h
