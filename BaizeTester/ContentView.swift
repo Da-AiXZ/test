@@ -54,6 +54,8 @@ struct ContentView: View {
                    description: "测试是否能在 /var/mobile/Documents/ 创建文件"),
         TestResult(name: "Shell执行", 
                    description: "测试能否用 system() 执行 shell 命令"),
+        TestResult(name: "⚡ 自备二进制执行", 
+                   description: "v2: 嵌入C程序→复制到/tmp/→chmod→posix_spawn执行"),
     ]
     @State private var isRunningAll = false
     
@@ -201,6 +203,7 @@ struct ContentView: View {
         case 2: detail = testDynamicLibrary()
         case 3: detail = testFileWrite()
         case 4: detail = testSystemCall()
+        case 5: detail = testSelfContainedBinary()
         default: detail = (false, "Unknown test")
         }
         
@@ -369,6 +372,88 @@ struct ContentView: View {
             let errorMsg = String(cString: strerror(ret))
             return (false, "❌ Shell 执行失败: \(errorMsg) (errno: \(ret))")
         }
+    }
+    
+    // MARK: - Test 6: Self-Contained Binary
+    
+    func testSelfContainedBinary() -> (Bool, String) {
+        var details: [String] = []
+        
+        // Step 1: Find binary in bundle
+        guard let bundlePath = Bundle.main.resourcePath else {
+            return (false, "❌ 无法获取 Bundle resource path")
+        }
+        let embeddedBinary = bundlePath + "/baize_v2"
+        
+        if !FileManager.default.fileExists(atPath: embeddedBinary) {
+            return (false, "❌ 二进制未嵌入 App: \(embeddedBinary)")
+        }
+        details.append("📦 找到嵌入二进制: \(String(embeddedBinary.suffix(40)))")
+        
+        // Step 2: Copy to /tmp/ (App bundle is read-only)
+        let tmpBinary = "/tmp/baize_v2"
+        try? FileManager.default.removeItem(atPath: tmpBinary)
+        
+        do {
+            try FileManager.default.copyItem(atPath: embeddedBinary, toPath: tmpBinary)
+            details.append("📋 复制到 /tmp/baize_v2 成功")
+        } catch {
+            return (false, "❌ 复制二进制失败: \(error.localizedDescription)")
+        }
+        
+        // Step 3: chmod +x
+        let chmodRet = chmod(tmpBinary, 0o755)
+        if chmodRet != 0 {
+            let err = String(cString: strerror(errno))
+            return (false, "❌ chmod +x 失败: \(err)")
+        }
+        details.append("🔑 chmod 755 成功")
+        
+        // Step 4: posix_spawn
+        let args = [tmpBinary]
+        var pid: pid_t = 0
+        
+        let argv = args.map { $0.withCString { strdup($0) } }
+        defer { argv.forEach { free($0) } }
+        
+        var cargv: [UnsafeMutablePointer<CChar>?] = argv.map { UnsafeMutablePointer<CChar>($0) }
+        cargv.append(nil)
+        
+        let spawnRet = posix_spawn(&pid, tmpBinary, nil, nil, &cargv, nil)
+        
+        if spawnRet != 0 {
+            let err = String(cString: strerror(spawnRet))
+            return (false, "❌ posix_spawn 失败: \(err) (errno: \(spawnRet))\n\(details.joined(separator: "\n"))")
+        }
+        
+        // Step 5: Wait for completion
+        var status: Int32 = 0
+        waitpid(pid, &status, 0)
+        let exitCode = WEXITSTATUS(status)
+        details.append("🟢 子进程退出 (PID: \(pid), exit: \(exitCode))")
+        
+        // Step 6: Verify output files
+        let testFile1 = "/tmp/baize_v2_test.txt"
+        if let content = try? String(contentsOfFile: testFile1, encoding: .utf8) {
+            details.append("✅ /tmp/baize_v2_test.txt: \(content.trimmingCharacters(in: .whitespacesAndNewlines))")
+            try? FileManager.default.removeItem(atPath: testFile1)
+        } else {
+            details.append("⚠️ /tmp/baize_v2_test.txt 不存在")
+        }
+        
+        let testFile2 = "/var/mobile/Documents/baize_v2_test.txt"
+        if let content = try? String(contentsOfFile: testFile2, encoding: .utf8) {
+            details.append("✅ /var/mobile/Documents/baize_v2_test.txt: \(content.trimmingCharacters(in: .whitespacesAndNewlines))")
+            try? FileManager.default.removeItem(atPath: testFile2)
+        } else {
+            details.append("⚠️ /var/mobile/Documents/baize_v2_test.txt 不存在")
+        }
+        
+        // Cleanup
+        try? FileManager.default.removeItem(atPath: tmpBinary)
+        
+        let success = exitCode == 0
+        return (success, details.joined(separator: "\n"))
     }
 }
 

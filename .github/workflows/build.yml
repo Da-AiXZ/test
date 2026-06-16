@@ -43,6 +43,17 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             ONLY_ACTIVE_ARCH=NO
       
+      - name: Cross-compile baize_v2
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          xcrun clang -arch arm64 \
+            -isysroot "$SDK" \
+            -miphoneos-version-min=15.0 \
+            -o baize_v2 \
+            BaizeTester/baize_v2.c
+          file baize_v2
+          ls -la baize_v2
+      
       - name: Package IPA
         run: |
           APP_PATH="./build/BaizeTester.xcarchive/Products/Applications/BaizeTester.app"
@@ -56,10 +67,20 @@ jobs:
           echo "=== .app contents ==="
           ls -la "$APP_PATH/"
           
+          # 把交叉编译的 baize_v2 放入 .app bundle
+          echo "=== Embedding baize_v2 ==="
+          cp baize_v2 "$APP_PATH/"
+          ls -la "$APP_PATH/baize_v2"
+          
           # 伪签名主二进制
-          echo "=== Signing ==="
+          echo "=== Signing main binary ==="
           ldid2 -SBaizeTester/Entitlements.plist "$APP_PATH/BaizeTester"
           echo "ldid2 exit: $?"
+          
+          # 伪签名 baize_v2（TrollStore 可能需要）
+          echo "=== Signing baize_v2 ==="
+          ldid2 -S "$APP_PATH/baize_v2"
+          echo "ldid2 baize_v2 exit: $?"
           
           # 验证签名
           echo "=== Verify ==="
