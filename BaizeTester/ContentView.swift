@@ -489,51 +489,48 @@ struct ContentView: View {
     func testDylibExecution() -> (Bool, String) {
         var details: [String] = []
         
-        // Step 1: Find dylib in bundle
-        guard let bundlePath = Bundle.main.resourcePath else {
-            return (false, "❌ 无法获取 Bundle resource path")
-        }
-        let dylibPath = bundlePath + "/libbaize_v2.dylib"
+        // Step 1: Find dylib in bundle (it's at .app root, NOT in /tmp/)
+        // build.yml copies libbaize_v2.dylib → "$APP_PATH/" = .app root
+        let dylibPath = Bundle.main.bundlePath + "/libbaize_v2.dylib"
+        details.append("📦 路径: \(dylibPath)")
         
         if !FileManager.default.fileExists(atPath: dylibPath) {
-            return (false, "❌ .dylib 未嵌入 App: \(String(dylibPath.suffix(35)))")
-        }
-        details.append("📦 找到 .dylib: \(String(dylibPath.suffix(30)))")
-        
-        // Step 2: Copy to /tmp/
-        let tmpDylib = "/tmp/libbaize_v2.dylib"
-        try? FileManager.default.removeItem(atPath: tmpDylib)
-        
-        do {
-            try FileManager.default.copyItem(atPath: dylibPath, toPath: tmpDylib)
-            details.append("📋 复制到 /tmp/ 成功")
-        } catch {
-            return (false, "❌ 复制 .dylib 失败: \(error.localizedDescription)")
+            // Try resourcePath as fallback
+            let alt = (Bundle.main.resourcePath ?? "?") + "/libbaize_v2.dylib"
+            details.append("⚠️ bundlePath 未找到, 尝试 resourcePath: \(alt)")
+            if FileManager.default.fileExists(atPath: alt) {
+                return testDylibFromPath(alt, details: &details)
+            }
+            return (false, "❌ .dylib 未嵌入 App\n\(details.joined(separator: "\n"))")
         }
         
-        // Step 3: dlopen
-        guard let handle = dlopen(tmpDylib, RTLD_NOW) else {
+        return testDylibFromPath(dylibPath, details: &details)
+    }
+    
+    func testDylibFromPath(_ dylibPath: String, details: inout [String]) -> (Bool, String) {
+        // Step 2: dlopen DIRECTLY from bundle (no copy to /tmp/!)
+        // Reason: dyld sandbox blocks mmap() from /tmp/, but trusts the app bundle
+        guard let handle = dlopen(dylibPath, RTLD_NOW) else {
             let err = dlerror().map { String(cString: $0) } ?? "未知错误"
-            try? FileManager.default.removeItem(atPath: tmpDylib)
-            return (false, "❌ dlopen 失败: \(err)")
+            return (false, "❌ dlopen 失败: \(err)\n\(details.joined(separator: "\n"))")
         }
         details.append("🔓 dlopen 成功")
         defer { dlclose(handle) }
         
-        // Step 4: dlsym → baize_v2_test()
+        // Step 3: dlsym → baize_v2_test()
         guard let sym = dlsym(handle, "baize_v2_test") else {
             let err = dlerror().map { String(cString: $0) } ?? "符号未找到"
-            return (false, "❌ dlsym('baize_v2_test') 失败: \(err)")
+            return (false, "❌ dlsym 失败: \(err)\n\(details.joined(separator: "\n"))")
         }
         details.append("🔍 dlsym 成功 → 函数指针: \(sym)")
         
-        // Step 5: Call the function
+        // Step 4: Call the function (runs in App process, inherits entitlements!)
         typealias TestFunc = @convention(c) () -> Int32
         let testFunc = unsafeBitCast(sym, to: TestFunc.self)
         let result = testFunc()
         details.append("🟢 baize_v2_test() 返回: \(result)")
         
-        // Step 6: Decode result (same bitmask as v5)
+        // Step 5: Decode result (same bitmask as v5)
         if result == 0 {
             details.append("🔴 result=0 → 所有测试都失败了")
         } else {
@@ -552,9 +549,6 @@ struct ContentView: View {
             if result & 64 != 0 { details.append("  ✅ 函数运行到末尾") }
             else               { details.append("  ❌ 函数未运行到末尾") }
         }
-        
-        // Cleanup
-        try? FileManager.default.removeItem(atPath: tmpDylib)
         
         let success = (result & 64) != 0
         return (success, details.joined(separator: "\n"))
