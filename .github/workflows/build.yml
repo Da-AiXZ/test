@@ -17,7 +17,7 @@ jobs:
         run: brew install xcodegen
       
       - name: Install ldid
-        run: brew install ldid
+        run: brew install ldid-procursus
       
       - name: Generate Xcode project
         run: |
@@ -65,7 +65,7 @@ jobs:
           fi
           
           # 伪签名（重要！TrollStore需要这个）
-          ldid -S BaizeTester/Entitlements.plist "$APP_PATH/BaizeTester"
+          ldid2 -S"$(cat BaizeTester/Entitlements.plist)" "$APP_PATH/BaizeTester"
           
           # 打包IPA
           mkdir -p Payload
