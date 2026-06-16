@@ -65,7 +65,7 @@ jobs:
           fi
           
           # 伪签名（重要！TrollStore需要这个）
-          ldid2 -S"$(cat BaizeTester/Entitlements.plist)" "$APP_PATH/BaizeTester"
+          ldid2 -SBaizeTester/Entitlements.plist "$APP_PATH/BaizeTester"
           
           # 打包IPA
           mkdir -p Payload
