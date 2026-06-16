@@ -1,0 +1,67 @@
+name: Build BaizeTester IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  build:
+    runs-on: macos-14
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Install xcodegen
+        run: brew install xcodegen
+      
+      - name: Install ldid
+        run: brew install ldid
+      
+      - name: Generate Xcode project
+        run: xcodegen generate
+      
+      - name: Build IPA
+        run: |
+          # 编译
+          xcodebuild archive \
+            -project BaizeTester.xcodeproj \
+            -scheme BaizeTester \
+            -archivePath ./build/BaizeTester.xcarchive \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            ONLY_ACTIVE_ARCH=NO \
+            2>&1 | tail -50
+      
+      - name: Package IPA
+        run: |
+          # 从xcarchive获取.app
+          APP_PATH="./build/BaizeTester.xcarchive/Products/Applications/BaizeTester.app"
+          
+          if [ ! -d "$APP_PATH" ]; then
+            echo "ERROR: .app not found at $APP_PATH"
+            ls -la ./build/BaizeTester.xcarchive/Products/Applications/ 2>/dev/null || echo "No Applications dir"
+            find ./build -name "*.app" 2>/dev/null || echo "No .app found"
+            exit 1
+          fi
+          
+          # 伪签名（重要！TrollStore需要这个）
+          ldid -S BaizeTester/Entitlements.plist "$APP_PATH/BaizeTester"
+          
+          # 打包IPA
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          zip -r BaizeTester.ipa Payload/
+          
+          echo "IPA created at: $(pwd)/BaizeTester.ipa"
+          ls -la BaizeTester.ipa
+      
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: BaizeTester.ipa
+          path: BaizeTester.ipa
+          retention-days: 7
