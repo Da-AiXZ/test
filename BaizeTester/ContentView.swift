@@ -562,29 +562,70 @@ struct ContentView: View {
     func testPythonEngine() -> (Bool, String) {
         var details: [String] = []
         
-        // Step 1: Find libpython3.13.dylib in bundle
         let bundlePath = Bundle.main.bundlePath
         let pyDylib = bundlePath + "/libpython3.13.dylib"
-        details.append("📦 路径: \(pyDylib)")
+        let stdlibPath = bundlePath + "/lib/python3.13"
         
+        details.append("📦 Bundle: \(String(bundlePath.suffix(40)))")
+        
+        // ---- Pre-flight checks ----
+        
+        // 1. List all dylibs in bundle
+        if let allFiles = try? FileManager.default.contentsOfDirectory(atPath: bundlePath) {
+            let dylibs = allFiles.filter { $0.hasSuffix(".dylib") }
+            details.append("🧬 发现 \(dylibs.count) 个 dylib:")
+            for d in dylibs.sorted() {
+                details.append("   \(d)")
+            }
+        }
+        
+        // 2. Check main dylib
         if !FileManager.default.fileExists(atPath: pyDylib) {
             return (false, "❌ libpython3.13.dylib 未找到\n\(details.joined(separator: "\n"))")
         }
+        let dylibSize = (try? FileManager.default.attributesOfItem(atPath: pyDylib)[.size] as? Int) ?? 0
+        details.append("📏 libpython3.13.dylib: \(dylibSize / 1024) KB")
         
-        // Check stdlib
-        let stdlibPath = bundlePath + "/lib/python3.13"
-        let hasStdlib = FileManager.default.fileExists(atPath: stdlibPath + "/os.py")
-        details.append("📚 标准库: \(hasStdlib ? "✅ os.py 存在" : "❌ 缺失")")
+        // 3. Check stdlib essentials
+        let encodingDir = stdlibPath + "/encodings"
+        let hasEncodings = FileManager.default.fileExists(atPath: encodingDir + "/__init__.py")
+        let hasOs = FileManager.default.fileExists(atPath: stdlibPath + "/os.py")
+        let hasSite = FileManager.default.fileExists(atPath: stdlibPath + "/site.py")
+        details.append("📚 标准库检查:")
+        details.append("   encodings/__init__.py: \(hasEncodings ? "✅" : "❌")")
+        details.append("   os.py: \(hasOs ? "✅" : "❌")")
+        details.append("   site.py: \(hasSite ? "✅" : "❌")")
         
-        // Step 2: dlopen libpython (with RTLD_GLOBAL so Python .so extensions can resolve symbols)
+        // 4. Pre-load all dylibs that libpython might depend on
+        let candidates = ["libffi.dylib", "libssl.dylib", "libcrypto.dylib", "liblzma.dylib", "libsqlite3.dylib", "libbz2.dylib", "libncurses.dylib", "libpanel.dylib"]
+        var preloaded: [String: UnsafeMutableRawPointer] = [:]
+        for dylibName in candidates {
+            let path = bundlePath + "/" + dylibName
+            if FileManager.default.fileExists(atPath: path) {
+                if let h = dlopen(path, RTLD_NOW | RTLD_GLOBAL) {
+                    preloaded[dylibName] = h
+                } else {
+                    let err = dlerror().map { String(cString: $0) } ?? "?"
+                    details.append("⚠️ 预加载 \(dylibName) 失败: \(err)")
+                }
+            }
+        }
+        details.append("🔗 预加载了 \(preloaded.count)/\(candidates.count) 个依赖 dylib")
+        
+        // ---- Main dlopen ----
+        
+        // Step 5: dlopen libpython (RTLD_NOW | RTLD_GLOBAL)
+        details.append("🔧 正在 dlopen libpython3.13.dylib...")
         guard let pyHandle = dlopen(pyDylib, RTLD_NOW | RTLD_GLOBAL) else {
             let err = dlerror().map { String(cString: $0) } ?? "未知"
-            return (false, "❌ dlopen 失败: \(err)\n\(details.joined(separator: "\n"))")
+            // Cleanup preloaded dylibs
+            for (_, h) in preloaded { dlclose(h) }
+            return (false, "❌ dlopen libpython 失败: \(err)\n\(details.joined(separator: "\n"))")
         }
         details.append("🔓 dlopen 成功")
-        defer { dlclose(pyHandle) }
+        // deferred: close pyHandle + preloaded dylibs at end
         
-        // Step 3: dlsym Python C API functions
+        // Step 6: dlsym Python C API functions
         typealias VoidFunc = @convention(c) () -> Void
         typealias IntFunc = @convention(c) () -> Int32
         typealias IntStrFunc = @convention(c) (UnsafePointer<CChar>) -> Int32
@@ -618,12 +659,17 @@ struct ContentView: View {
         
         details.append("🔍 dlsym 6个 API 全部成功")
         
-        // Step 4: Set PYTHONHOME to bundle path
-        // Python expects: {PYTHONHOME}/lib/python3.13/
+        // Step 7: Set Python environment variables
         setenv("PYTHONHOME", bundlePath, 1)
+        setenv("PYTHONPATH", stdlibPath, 1)
+        setenv("PYTHONDONTWRITEBYTECODE", "1", 1)
+        setenv("PYTHONNOUSERSITE", "1", 1)
+        setenv("PYTHONIOENCODING", "utf-8", 1)
         details.append("🏠 PYTHONHOME=\(String(bundlePath.suffix(35)))")
+        details.append("📂 PYTHONPATH=lib/python3.13")
         
-        // Step 5: Initialize Python
+        // Step 8: Initialize Python
+        details.append("🚀 正在 Py_Initialize()...")
         Py_Initialize()
         
         if Py_IsInitialized() == 0 {
@@ -631,11 +677,11 @@ struct ContentView: View {
         }
         details.append("✅ Py_Initialize 成功")
         
-        // Step 6: Get version
+        // Step 9: Get version
         let version = String(cString: Py_GetVersion())
         details.append("🐍 版本: \(version)")
         
-        // Step 7: Run Python code that writes output to a file
+        // Step 10: Run Python code that writes output to a file
         let testScript = """
 import sys, os
 ver = sys.version
@@ -665,7 +711,7 @@ with open('/tmp/py_engine_test.txt', 'w') as f:
         }
         details.append("✅ Python 脚本执行成功 (rc=0)")
         
-        // Step 8: Read output file
+        // Step 11: Read output file
         let outputPath = "/tmp/py_engine_test.txt"
         if let output = try? String(contentsOfFile: outputPath, encoding: .utf8) {
             details.append("--- Python 输出 ---")
@@ -680,9 +726,14 @@ with open('/tmp/py_engine_test.txt', 'w') as f:
             details.append("⚠️ 输出文件不存在（Python 可能无权写入 /tmp/）")
         }
         
-        // Step 9: Finalize
+        // Step 12: Finalize
         Py_FinalizeEx()
         details.append("🔚 Py_FinalizeEx 完成")
+        
+        // Cleanup: close main handle + preloaded dylibs
+        dlclose(pyHandle)
+        for (_, h) in preloaded { dlclose(h) }
+        details.append("🧹 dylib 清理完成")
         
         let hasOutput = details.contains(where: { $0.contains("PY_OK") })
         return (hasOutput, details.joined(separator: "\n"))

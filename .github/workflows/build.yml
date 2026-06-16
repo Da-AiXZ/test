@@ -77,15 +77,20 @@ jobs:
           mkdir -p python-ios-full
           tar xzf python-ios.tar.gz -C python-ios-full
           
-          echo "=== Copying needed files ==="
+          echo "=== Copying ALL framework dylibs ==="
           mkdir -p python-ios/lib
-          # Dylib
-          cp python-ios-full/Python.xcframework/ios-arm64/lib/libpython3.13.dylib python-ios/
+          # Copy ALL dylibs from the framework (libffi, libssl, libcrypto, etc.)
+          # libpython3.13.dylib depends on these at runtime
+          cp -v python-ios-full/Python.xcframework/ios-arm64/lib/*.dylib python-ios/
+          echo "All dylibs:"
+          ls -lh python-ios/*.dylib
+          
           # Stdlib -> arrange as lib/python3.13/
           cp -R python-ios-full/Python.xcframework/ios-arm64/lib-arm64/python3.13 python-ios/lib/
           
           echo "=== Python artifacts ==="
-          ls -lh python-ios/libpython3.13.dylib
+          echo "Dylib count: $(ls python-ios/*.dylib 2>/dev/null | wc -l)"
+          ls -lh python-ios/*.dylib 2>/dev/null
           echo "Stdlib files: $(find python-ios/lib/python3.13 -type f | wc -l)"
           du -sh python-ios/
       
@@ -105,14 +110,16 @@ jobs:
           cp -v baize_v2 "$APP_PATH/"
           cp -v libbaize_v2.dylib "$APP_PATH/"
           
-          # Embed Python dylib + stdlib
+          # Embed ALL Python dylibs + stdlib
           echo "=== Embedding Python ==="
           if [ ! -f python-ios/libpython3.13.dylib ]; then
             echo "ERROR: python-ios/libpython3.13.dylib not found"
             ls -la python-ios/ 2>/dev/null || true
             exit 1
           fi
-          cp -v python-ios/libpython3.13.dylib "$APP_PATH/"
+          
+          # Copy ALL framework dylibs (libffi, libssl, libcrypto, etc.)
+          cp -v python-ios/*.dylib "$APP_PATH/"
           
           if [ ! -d python-ios/lib/python3.13 ]; then
             echo "ERROR: python-ios/lib/python3.13 not found"
@@ -122,15 +129,48 @@ jobs:
           cp -R python-ios/lib "$APP_PATH/"
           echo "Python stdlib: $(find "$APP_PATH/lib/python3.13" -type f 2>/dev/null | wc -l) files"
           
+          # CRITICAL: Fix dylib install names to use @loader_path
+          # Without this, dyld can't find dependencies → instant crash
+          echo "=== Fixing dylib install names ==="
+          cd "$APP_PATH"
+          for dylib in *.dylib; do
+            echo "--- $dylib ---"
+            # Show current ID and dependencies
+            otool -L "$dylib" | head -20
+            # Change dylib's own install name to @loader_path
+            install_name_tool -id "@loader_path/$dylib" "$dylib" 2>/dev/null || echo "  (id change skipped)"
+            # Change all @rpath/ dependencies to @loader_path/
+            for dep in $(otool -L "$dylib" | grep '@rpath/' | awk '{print $1}'); do
+              dep_name=$(basename "$dep")
+              echo "  Changing $dep → @loader_path/$dep_name"
+              install_name_tool -change "$dep" "@loader_path/$dep_name" "$dylib"
+            done
+          done
+          echo "=== Fixed dylib dependencies ==="
+          for dylib in *.dylib; do
+            echo "--- $dylib ---"
+            otool -L "$dylib" | head -20
+          done
+          cd -
+          
           # Sign main binary
-          echo "=== Signing main binary ==="
+          echo "=== Adding rpath + signing main binary ==="
+          # Add @executable_path to rpath so it can find dylibs in app root
+          install_name_tool -add_rpath "@executable_path" "$APP_PATH/BaizeTester" 2>/dev/null || echo "WARN: rpath add failed (may already exist)"
+          otool -l "$APP_PATH/BaizeTester" | grep -A2 LC_RPATH || echo "  (no LC_RPATH)"
           ldid2 -SBaizeTester/Entitlements.plist "$APP_PATH/BaizeTester" || { echo "FATAL: main binary signing failed"; exit 1; }
           
           # Sign embedded binaries
           echo "=== Signing embedded binaries ==="
           ldid2 -S "$APP_PATH/baize_v2" || echo "WARN: baize_v2 signing failed"
           ldid2 -S "$APP_PATH/libbaize_v2.dylib" || echo "WARN: libbaize_v2 signing failed"
-          ldid2 -S "$APP_PATH/libpython3.13.dylib" || echo "WARN: libpython3.13 signing failed"
+          
+          # Sign ALL Python dylibs (not just libpython3.13)
+          echo "=== Signing all Python dylibs ==="
+          for dylib in "$APP_PATH"/*.dylib; do
+            echo "Signing: $(basename "$dylib")"
+            ldid2 -S "$dylib" || echo "WARN: failed to sign $(basename "$dylib")"
+          done
           
           # Sign Python .so extensions
           echo "=== Signing .so extensions ==="
