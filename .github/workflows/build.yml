@@ -67,6 +67,29 @@ jobs:
           file libbaize_v2.dylib
           ls -la libbaize_v2.dylib
       
+      - name: Download Python 3.13 for iOS (beeWare)
+        run: |
+          echo "=== Downloading beeware Python-Apple-support ==="
+          curl -L -o python-ios.tar.gz \
+            "https://github.com/beeware/Python-Apple-support/releases/download/3.13-b14/Python-3.13-iOS-support.b14.tar.gz"
+          
+          echo "=== Extracting ==="
+          mkdir -p python-ios
+          tar xzf python-ios.tar.gz --strip-components=3 -C python-ios \
+            Python.xcframework/ios-arm64/lib/libpython3.13.dylib \
+            Python.xcframework/ios-arm64/lib-arm64/python3.13/
+          
+          # Rename stdlib dir so Python finds it at {home}/lib/python3.13/
+          # PYTHONHOME = app bundle, Python looks for {PYTHONHOME}/lib/python3.13/
+          mkdir -p python-ios/lib
+          mv python-ios/python3.13 python-ios/lib/
+          
+          echo "=== Python artifacts ==="
+          ls -lh python-ios/libpython3.13.dylib
+          ls python-ios/lib/python3.13/ | head -10
+          echo "  ... ($(find python-ios/lib/python3.13 -type f | wc -l) files total)"
+          du -sh python-ios/
+      
       - name: Package IPA
         run: |
           APP_PATH="./build/BaizeTester.xcarchive/Products/Applications/BaizeTester.app"
@@ -84,20 +107,31 @@ jobs:
           echo "=== Embedding binaries ==="
           cp baize_v2 "$APP_PATH/"
           cp libbaize_v2.dylib "$APP_PATH/"
-          ls -la "$APP_PATH/baize_v2" "$APP_PATH/libbaize_v2.dylib"
+          
+          # Embed Python dylib + stdlib
+          echo "=== Embedding Python ==="
+          cp python-ios/libpython3.13.dylib "$APP_PATH/"
+          cp -R python-ios/lib "$APP_PATH/"
+          ls -la "$APP_PATH/libpython3.13.dylib" "$APP_PATH/lib/"
+          echo "Python stdlib: $(find $APP_PATH/lib/python3.13 -type f | wc -l) files"
           
           # Sign main binary
           echo "=== Signing main binary ==="
           ldid2 -SBaizeTester/Entitlements.plist "$APP_PATH/BaizeTester"
           echo "ldid2 exit: $?"
           
-          # Sign baize_v2 (for posix_spawn test - though we now know it gets SIGKILL'd)
+          # Sign baize_v2
           echo "=== Signing baize_v2 ==="
           ldid2 -S "$APP_PATH/baize_v2"
           
-          # Sign dylib (for dlopen test - runs in-process, inherits entitlements)
-          echo "=== Signing libbaize_v2.dylib ==="
+          # Sign all dylibs
+          echo "=== Signing dylibs ==="
           ldid2 -S "$APP_PATH/libbaize_v2.dylib"
+          ldid2 -S "$APP_PATH/libpython3.13.dylib"
+          # Sign Python .so extensions (needed for import)
+          for so in $(find "$APP_PATH/lib/python3.13" -name "*.so" -type f); do
+            ldid2 -S "$so"
+          done
           
           # Verify
           echo "=== Verify ==="
@@ -109,7 +143,7 @@ jobs:
           cp -R "$APP_PATH" Payload/
           zip -r BaizeTester.ipa Payload/
           
-          echo "IPA: $(ls -lh BaizeTester.ipa | awk '{print $5}')"
+          echo "IPA size: $(ls -lh BaizeTester.ipa | awk '{print $5}')"
       
       - name: Upload IPA
         uses: actions/upload-artifact@v4

@@ -58,6 +58,8 @@ struct ContentView: View {
                    description: "v2: 嵌入C程序→复制到/tmp/→chmod→posix_spawn执行"),
         TestResult(name: "🧬 dlopen 动态库执行", 
                    description: "v6: 嵌入.dylib→dlopen→dlsym调用（运行在App进程内）"),
+        TestResult(name: "🐍 Python 引擎",
+                   description: "v8: dlopen libpython3.13→Py_Initialize→执行Python代码"),
     ]
     @State private var isRunningAll = false
     
@@ -207,6 +209,7 @@ struct ContentView: View {
         case 4: detail = testSystemCall()
         case 5: detail = testSelfContainedBinary()
         case 6: detail = testDylibExecution()
+        case 7: detail = testPythonEngine()
         default: detail = (false, "Unknown test")
         }
         
@@ -552,6 +555,137 @@ struct ContentView: View {
         
         let success = (result & 64) != 0
         return (success, details.joined(separator: "\n"))
+    }
+    
+    // MARK: - Test 8: Python Engine
+    
+    func testPythonEngine() -> (Bool, String) {
+        var details: [String] = []
+        
+        // Step 1: Find libpython3.13.dylib in bundle
+        let bundlePath = Bundle.main.bundlePath
+        let pyDylib = bundlePath + "/libpython3.13.dylib"
+        details.append("📦 路径: \(pyDylib)")
+        
+        if !FileManager.default.fileExists(atPath: pyDylib) {
+            return (false, "❌ libpython3.13.dylib 未找到\n\(details.joined(separator: "\n"))")
+        }
+        
+        // Check stdlib
+        let stdlibPath = bundlePath + "/lib/python3.13"
+        let hasStdlib = FileManager.default.fileExists(atPath: stdlibPath + "/os.py")
+        details.append("📚 标准库: \(hasStdlib ? "✅ os.py 存在" : "❌ 缺失")")
+        
+        // Step 2: dlopen libpython (with RTLD_GLOBAL so Python .so extensions can resolve symbols)
+        guard let pyHandle = dlopen(pyDylib, RTLD_NOW | RTLD_GLOBAL) else {
+            let err = dlerror().map { String(cString: $0) } ?? "未知"
+            return (false, "❌ dlopen 失败: \(err)\n\(details.joined(separator: "\n"))")
+        }
+        details.append("🔓 dlopen 成功")
+        defer { dlclose(pyHandle) }
+        
+        // Step 3: dlsym Python C API functions
+        typealias VoidFunc = @convention(c) () -> Void
+        typealias IntFunc = @convention(c) () -> Int32
+        typealias IntStrFunc = @convention(c) (UnsafePointer<CChar>) -> Int32
+        typealias StrFunc = @convention(c) () -> UnsafePointer<CChar>
+        
+        guard let _Py_Initialize = dlsym(pyHandle, "Py_Initialize") else {
+            return (false, "❌ dlsym Py_Initialize 失败\n\(details.joined(separator: "\n"))")
+        }
+        guard let _Py_IsInitialized = dlsym(pyHandle, "Py_IsInitialized") else {
+            return (false, "❌ dlsym Py_IsInitialized 失败\n\(details.joined(separator: "\n"))")
+        }
+        guard let _PyRun_SimpleString = dlsym(pyHandle, "PyRun_SimpleString") else {
+            return (false, "❌ dlsym PyRun_SimpleString 失败\n\(details.joined(separator: "\n"))")
+        }
+        guard let _Py_GetVersion = dlsym(pyHandle, "Py_GetVersion") else {
+            return (false, "❌ dlsym Py_GetVersion 失败\n\(details.joined(separator: "\n"))")
+        }
+        guard let _Py_FinalizeEx = dlsym(pyHandle, "Py_FinalizeEx") else {
+            return (false, "❌ dlsym Py_FinalizeEx 失败\n\(details.joined(separator: "\n"))")
+        }
+        guard let _PyErr_Print = dlsym(pyHandle, "PyErr_Print") else {
+            return (false, "❌ dlsym PyErr_Print 失败\n\(details.joined(separator: "\n"))")
+        }
+        
+        let Py_Initialize = unsafeBitCast(_Py_Initialize, to: VoidFunc.self)
+        let Py_IsInitialized = unsafeBitCast(_Py_IsInitialized, to: IntFunc.self)
+        let PyRun_SimpleString = unsafeBitCast(_PyRun_SimpleString, to: IntStrFunc.self)
+        let Py_GetVersion = unsafeBitCast(_Py_GetVersion, to: StrFunc.self)
+        let Py_FinalizeEx = unsafeBitCast(_Py_FinalizeEx, to: IntFunc.self)
+        let PyErr_Print = unsafeBitCast(_PyErr_Print, to: VoidFunc.self)
+        
+        details.append("🔍 dlsym 6个 API 全部成功")
+        
+        // Step 4: Set PYTHONHOME to bundle path
+        // Python expects: {PYTHONHOME}/lib/python3.13/
+        setenv("PYTHONHOME", bundlePath, 1)
+        details.append("🏠 PYTHONHOME=\(String(bundlePath.suffix(35)))")
+        
+        // Step 5: Initialize Python
+        Py_Initialize()
+        
+        if Py_IsInitialized() == 0 {
+            return (false, "❌ Py_Initialize 后 Py_IsInitialized 返回 0\n\(details.joined(separator: "\n"))")
+        }
+        details.append("✅ Py_Initialize 成功")
+        
+        // Step 6: Get version
+        let version = String(cString: Py_GetVersion())
+        details.append("🐍 版本: \(version)")
+        
+        // Step 7: Run Python code that writes output to a file
+        let testScript = """
+import sys, os
+ver = sys.version
+pm = sys.prefix + "|" + (sys.executable or "none")
+
+# Write results to file (stdout may not be visible)
+with open('/tmp/py_engine_test.txt', 'w') as f:
+    f.write('PY_OK:' + ver.split()[0] + '\\n')
+    f.write('PREFIX:' + sys.prefix + '\\n')
+    f.write('EXEC:' + str(sys.executable) + '\\n')
+    try:
+        items = os.listdir('/var/mobile/')
+        f.write('LS_VAR:' + ','.join(items[:5]) + '\\n')
+    except Exception as e:
+        f.write('LS_ERR:' + str(e) + '\\n')
+    try:
+        items2 = os.listdir('/tmp/')
+        f.write('LS_TMP:' + str(len(items2)) + ' items\\n')
+    except Exception as e:
+        f.write('TMP_ERR:' + str(e) + '\\n')
+"""
+        
+        let rc = PyRun_SimpleString(testScript)
+        if rc != 0 {
+            PyErr_Print()
+            return (false, "❌ PyRun_SimpleString 失败 (rc=\(rc))\n\(details.joined(separator: "\n"))")
+        }
+        details.append("✅ Python 脚本执行成功 (rc=0)")
+        
+        // Step 8: Read output file
+        let outputPath = "/tmp/py_engine_test.txt"
+        if let output = try? String(contentsOfFile: outputPath, encoding: .utf8) {
+            details.append("--- Python 输出 ---")
+            for line in output.components(separatedBy: "\n") {
+                if !line.isEmpty {
+                    details.append("  \(line)")
+                }
+            }
+            details.append("--- 结束 ---")
+            try? FileManager.default.removeItem(atPath: outputPath)
+        } else {
+            details.append("⚠️ 输出文件不存在（Python 可能无权写入 /tmp/）")
+        }
+        
+        // Step 9: Finalize
+        Py_FinalizeEx()
+        details.append("🔚 Py_FinalizeEx 完成")
+        
+        let hasOutput = details.contains(where: { $0.contains("PY_OK") })
+        return (hasOutput, details.joined(separator: "\n"))
     }
 }
 
