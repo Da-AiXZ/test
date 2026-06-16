@@ -92,50 +92,58 @@ jobs:
       
       - name: Package IPA
         run: |
+          set -e
           APP_PATH="./build/BaizeTester.xcarchive/Products/Applications/BaizeTester.app"
           
           if [ ! -d "$APP_PATH" ]; then
-            echo "ERROR: .app not found"
+            echo "ERROR: .app not found at $APP_PATH"
             find ./build -name "*.app" | head -5
             exit 1
           fi
           
-          echo "=== .app contents ==="
-          ls -la "$APP_PATH/"
-          
-          # Embed baize_v2 executable + dylib
           echo "=== Embedding binaries ==="
-          cp baize_v2 "$APP_PATH/"
-          cp libbaize_v2.dylib "$APP_PATH/"
+          cp -v baize_v2 "$APP_PATH/"
+          cp -v libbaize_v2.dylib "$APP_PATH/"
           
           # Embed Python dylib + stdlib
           echo "=== Embedding Python ==="
-          cp python-ios/libpython3.13.dylib "$APP_PATH/"
+          if [ ! -f python-ios/libpython3.13.dylib ]; then
+            echo "ERROR: python-ios/libpython3.13.dylib not found"
+            ls -la python-ios/ 2>/dev/null || true
+            exit 1
+          fi
+          cp -v python-ios/libpython3.13.dylib "$APP_PATH/"
+          
+          if [ ! -d python-ios/lib/python3.13 ]; then
+            echo "ERROR: python-ios/lib/python3.13 not found"
+            find python-ios -type d | head -10
+            exit 1
+          fi
           cp -R python-ios/lib "$APP_PATH/"
-          ls -la "$APP_PATH/libpython3.13.dylib" "$APP_PATH/lib/"
-          echo "Python stdlib: $(find $APP_PATH/lib/python3.13 -type f | wc -l) files"
+          echo "Python stdlib: $(find "$APP_PATH/lib/python3.13" -type f 2>/dev/null | wc -l) files"
           
           # Sign main binary
           echo "=== Signing main binary ==="
-          ldid2 -SBaizeTester/Entitlements.plist "$APP_PATH/BaizeTester"
-          echo "ldid2 exit: $?"
+          ldid2 -SBaizeTester/Entitlements.plist "$APP_PATH/BaizeTester" || { echo "FATAL: main binary signing failed"; exit 1; }
           
-          # Sign baize_v2
-          echo "=== Signing baize_v2 ==="
-          ldid2 -S "$APP_PATH/baize_v2"
+          # Sign embedded binaries
+          echo "=== Signing embedded binaries ==="
+          ldid2 -S "$APP_PATH/baize_v2" || echo "WARN: baize_v2 signing failed"
+          ldid2 -S "$APP_PATH/libbaize_v2.dylib" || echo "WARN: libbaize_v2 signing failed"
+          ldid2 -S "$APP_PATH/libpython3.13.dylib" || echo "WARN: libpython3.13 signing failed"
           
-          # Sign all dylibs
-          echo "=== Signing dylibs ==="
-          ldid2 -S "$APP_PATH/libbaize_v2.dylib"
-          ldid2 -S "$APP_PATH/libpython3.13.dylib"
-          # Sign Python .so extensions (needed for import)
-          for so in $(find "$APP_PATH/lib/python3.13" -name "*.so" -type f); do
-            ldid2 -S "$so"
+          # Sign Python .so extensions
+          echo "=== Signing .so extensions ==="
+          SO_COUNT=0
+          find "$APP_PATH/lib/python3.13" -name "*.so" -type f -print0 | while IFS= read -r -d '' so; do
+            ldid2 -S "$so" || echo "WARN: failed to sign $so"
+            SO_COUNT=$((SO_COUNT + 1))
           done
+          echo "Signed $SO_COUNT .so files"
           
-          # Verify
+          # Verify main binary entitlements
           echo "=== Verify ==="
-          ldid2 -e "$APP_PATH/BaizeTester" 2>&1 | head -20
+          ldid2 -e "$APP_PATH/BaizeTester" 2>&1 | head -5
           
           # Package IPA
           mkdir -p Payload
