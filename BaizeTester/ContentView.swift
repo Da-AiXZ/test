@@ -379,31 +379,32 @@ struct TestResultCard: View {
     var onRun: () -> Void
     
     var body: some View {
+        let r = result
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text(result.icon)
+                Text(r.status.icon)
                     .font(.largeTitle)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(result.name)
+                    Text(r.name)
                         .font(.headline)
-                    Text(result.description)
+                    Text(r.description)
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
                 Spacer()
                 Button(action: onRun) {
-                    Text(result.status == .running ? "运行中..." : "运行")
+                    Text(r.status == .running ? "运行中..." : "运行")
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
-                        .background(result.status == .running ? Color.gray : Color.blue)
+                        .background(r.status == .running ? Color.gray : Color.blue)
                         .foregroundColor(.white)
                         .cornerRadius(8)
                 }
-                .disabled(result.status == .running)
+                .disabled(r.status == .running)
             }
             
-            if !result.detail.isEmpty {
-                Text(result.detail)
+            if !r.detail.isEmpty {
+                Text(r.detail)
                     .font(.system(.caption, design: .monospaced))
                     .padding(8)
                     .background(Color(.systemGray6))
