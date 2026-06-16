@@ -390,35 +390,25 @@ struct ContentView: View {
         }
         details.append("📦 找到嵌入二进制")
         
-        // Step 2: Copy to /tmp/ (App bundle is read-only)
+        // Step 2: Copy to /tmp/
         let tmpBinary = "/tmp/baize_v2"
         try? FileManager.default.removeItem(atPath: tmpBinary)
         
         do {
             try FileManager.default.copyItem(atPath: embeddedBinary, toPath: tmpBinary)
-            details.append("📋 复制到 /tmp/baize_v2 成功")
+            details.append("📋 复制成功")
         } catch {
             return (false, "❌ 复制二进制失败: \(error.localizedDescription)")
         }
         
         // Step 3: chmod +x
-        let chmodRet = chmod(tmpBinary, 0o755)
-        if chmodRet != 0 {
+        if chmod(tmpBinary, 0o755) != 0 {
             let err = String(cString: strerror(errno))
             return (false, "❌ chmod +x 失败: \(err)")
         }
         details.append("🔑 chmod 755 成功")
         
-        // Step 4: Create pipe for stdout capture
-        var pipeFds: [Int32] = [0, 0]
-        if pipe(&pipeFds) != 0 {
-            return (false, "❌ pipe() 失败: \(String(cString: strerror(errno)))")
-        }
-        let pipeRead = pipeFds[0]
-        let pipeWrite = pipeFds[1]
-        details.append("🔗 pipe 创建成功 (r=\(pipeRead), w=\(pipeWrite))")
-        
-        // Step 5: posix_spawn with stdout redirect
+        // Step 4: posix_spawn (no pipe - v5 uses exit code only)
         let args = [tmpBinary]
         var pid: pid_t = 0
         
@@ -428,83 +418,48 @@ struct ContentView: View {
         var cargv: [UnsafeMutablePointer<CChar>?] = argv.map { UnsafeMutablePointer<CChar>($0) }
         cargv.append(nil)
         
-        var fileActions: posix_spawn_file_actions_t?
-        posix_spawn_file_actions_init(&fileActions)
-        posix_spawn_file_actions_adddup2(&fileActions, pipeWrite, STDOUT_FILENO)
-        posix_spawn_file_actions_addclose(&fileActions, pipeRead)
-        
-        var spawnAttr: posix_spawnattr_t?
-        posix_spawnattr_init(&spawnAttr)
-        
-        let spawnRet = posix_spawn(&pid, tmpBinary, &fileActions, &spawnAttr, &cargv, nil)
-        
-        // Close write end in parent (must do this before reading)
-        close(pipeWrite)
-        posix_spawn_file_actions_destroy(&fileActions)
-        posix_spawnattr_destroy(&spawnAttr)
+        let spawnRet = posix_spawn(&pid, tmpBinary, nil, nil, &cargv, nil)
         
         if spawnRet != 0 {
-            close(pipeRead)
             let err = String(cString: strerror(spawnRet))
             return (false, "❌ posix_spawn 失败: \(err) (errno: \(spawnRet))")
         }
         
-        // Step 6: Read stdout from pipe while process runs
-        var stdoutData = Data()
-        let bufferSize = 4096
-        var buffer = [UInt8](repeating: 0, count: bufferSize)
-        var totalBytes = 0
-        
-        while true {
-            let bytesRead = read(pipeRead, &buffer, bufferSize)
-            if bytesRead <= 0 { break }
-            stdoutData.append(contentsOf: buffer[0..<bytesRead])
-            totalBytes += bytesRead
-        }
-        close(pipeRead)
-        details.append("📤 捕获 stdout: \(totalBytes) bytes")
-        
-        // Step 7: Wait for process
+        // Step 5: Wait for process
         var status: Int32 = 0
         waitpid(pid, &status, 0)
-        let exitCode = WEXITSTATUS(status)
-        details.append("🟢 子进程退出 (PID: \(pid), exit: \(exitCode))")
+        let rawExit = WEXITSTATUS(status)
+        let fullStatus = status
+        details.append("🟢 子进程退出 (PID: \(pid), raw_exit=\(rawExit), full_status=\(fullStatus))")
         
-        // Step 8: Parse stdout
-        let stdoutStr = String(data: stdoutData, encoding: .utf8) ?? "<binary output>"
-        details.append("--- 子进程 stdout ---")
-        for line in stdoutStr.components(separatedBy: "\n") {
-            if !line.isEmpty {
-                details.append("  \(line)")
-            }
-        }
-        details.append("--- stdout 结束 ---")
-        
-        // Step 9: Also check file outputs (may still work if child did write)
-        let testFile1 = "/tmp/baize_v2_test.txt"
-        if FileManager.default.fileExists(atPath: testFile1) {
-            if let content = try? String(contentsOfFile: testFile1, encoding: .utf8) {
-                details.append("✅ 文件 /tmp/baize_v2_test.txt: \(content.trimmingCharacters(in: .whitespacesAndNewlines))")
-            }
-            try? FileManager.default.removeItem(atPath: testFile1)
+        // Step 6: Decode exit code (v5 bitmask)
+        let exitCode = Int(rawExit)
+        if exitCode == 0 {
+            details.append("🔴 exit=0 → 所有测试都失败了！")
+            details.append("   子进程连最基本的 fopen 都无法执行")
         } else {
-            details.append("⚠️ 文件 /tmp/baize_v2_test.txt 不存在")
-        }
-        
-        let testFile2 = "/var/mobile/Documents/baize_v2_test.txt"
-        if FileManager.default.fileExists(atPath: testFile2) {
-            if let content = try? String(contentsOfFile: testFile2, encoding: .utf8) {
-                details.append("✅ 文件 /var/mobile/Documents/baize_v2_test.txt: \(content.trimmingCharacters(in: .whitespacesAndNewlines))")
-            }
-            try? FileManager.default.removeItem(atPath: testFile2)
-        } else {
-            details.append("⚠️ 文件 /var/mobile/Documents/baize_v2_test.txt 不存在")
+            details.append("--- 位掩码解码 ---")
+            if exitCode & 1  != 0 { details.append("  ✅ bit0: /tmp/ 可写 (fopen成功)") }
+            else                 { details.append("  ❌ bit0: /tmp/ 不可写") }
+            if exitCode & 2  != 0 { details.append("  ✅ bit1: /var/mobile/Documents/ 可写") }
+            else                 { details.append("  ❌ bit1: /var/mobile/Documents/ 不可写") }
+            if exitCode & 4  != 0 { details.append("  ✅ bit2: /private/tmp/ 可写") }
+            else                 { details.append("  ❌ bit2: /private/tmp/ 不可写") }
+            if exitCode & 8  != 0 { details.append("  ✅ bit3: access(/tmp/,W_OK) 通过") }
+            else                 { details.append("  ❌ bit3: access(/tmp/,W_OK) 失败") }
+            if exitCode & 16 != 0 { details.append("  ✅ bit4: mkdir 成功") }
+            else                 { details.append("  ❌ bit4: mkdir 失败") }
+            if exitCode & 32 != 0 { details.append("  ✅ bit5: getcwd 成功") }
+            else                 { details.append("  ❌ bit5: getcwd 失败") }
+            if exitCode & 64 != 0 { details.append("  ✅ bit6: 程序运行到末尾（基本执行正常）") }
+            else                 { details.append("  ❌ bit6: 程序未运行到末尾（提前崩溃/退出）") }
         }
         
         // Cleanup
         try? FileManager.default.removeItem(atPath: tmpBinary)
         
-        let success = exitCode == 0
+        // Success = at least bit6 (program ran to completion)
+        let success = (exitCode & 64) != 0
         return (success, details.joined(separator: "\n"))
     }
 }

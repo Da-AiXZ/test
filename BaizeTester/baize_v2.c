@@ -4,81 +4,65 @@
 #include <errno.h>
 #include <sys/stat.h>
 
-// All output via stdout (printf) so parent can capture via pipe
-#define SAY(fmt, ...) printf(fmt "\n", ##__VA_ARGS__); fflush(stdout)
+// v5: Communicate SOLELY via exit code.
+// Each test result encoded as a bit in the exit code.
+// This avoids relying on printf/stdout (proved unreachable in v4).
 
 int main(int argc, char **argv) {
-    SAY(">>> baize_v2 started pid=%d", getpid());
+    int result = 0;
     
-    // Test 1: write to /tmp/
+    // Test 1: fopen /tmp/baize_v2_test.txt
     {
-        const char *path = "/tmp/baize_v2_test.txt";
-        FILE *f = fopen(path, "w");
-        if (!f) {
-            SAY("T1_FAIL: fopen(%s) errno=%d (%s)", path, errno, strerror(errno));
-        } else {
-            fprintf(f, "BAIZE_V2_OK pid=%d\n", getpid());
+        FILE *f = fopen("/tmp/baize_v2_test.txt", "w");
+        if (f) {
+            fprintf(f, "OK\n");
             fclose(f);
-            SAY("T1_OK: wrote %s", path);
+            result |= 1;  // bit 0 = /tmp/ writable
         }
     }
     
-    // Test 2: write to /var/mobile/Documents/
+    // Test 2: fopen /var/mobile/Documents/baize_v2_test.txt
     {
-        const char *path = "/var/mobile/Documents/baize_v2_test.txt";
-        FILE *f = fopen(path, "w");
-        if (!f) {
-            SAY("T2_FAIL: fopen(%s) errno=%d (%s)", path, errno, strerror(errno));
-        } else {
-            fprintf(f, "BAIZE_V2_DOCUMENTS_OK pid=%d\n", getpid());
+        FILE *f = fopen("/var/mobile/Documents/baize_v2_test.txt", "w");
+        if (f) {
+            fprintf(f, "OK\n");
             fclose(f);
-            SAY("T2_OK: wrote %s", path);
+            result |= 2;  // bit 1 = /var/mobile/Documents/ writable
         }
     }
     
-    // Test 3: try /private/tmp/
+    // Test 3: fopen /private/tmp/baize_v2_test.txt
     {
-        const char *path = "/private/tmp/baize_v2_test.txt";
-        FILE *f = fopen(path, "w");
-        if (!f) {
-            SAY("T3_FAIL: fopen(%s) errno=%d (%s)", path, errno, strerror(errno));
-        } else {
-            fprintf(f, "BAIZE_V2_PRIVATE_TMP_OK pid=%d\n", getpid());
+        FILE *f = fopen("/private/tmp/baize_v2_test.txt", "w");
+        if (f) {
+            fprintf(f, "OK\n");
             fclose(f);
-            SAY("T3_OK: wrote %s", path);
+            result |= 4;  // bit 2 = /private/tmp/ writable
         }
     }
     
-    // Test 4: what does getcwd() say?
-    {
-        char cwd[1024];
-        if (getcwd(cwd, sizeof(cwd))) {
-            SAY("T4_CWD: %s", cwd);
-        } else {
-            SAY("T4_CWD: getcwd failed errno=%d", errno);
-        }
+    // Test 4: access("/tmp/", W_OK)
+    if (access("/tmp/", W_OK) == 0) {
+        result |= 8;  // bit 3 = /tmp/ access says writable
     }
     
-    // Test 5: can we access() /tmp/ ?
-    {
-        if (access("/tmp/", W_OK) == 0) {
-            SAY("T5_ACCESS: /tmp/ is writable");
-        } else {
-            SAY("T5_ACCESS: /tmp/ NOT writable errno=%d (%s)", errno, strerror(errno));
-        }
+    // Test 5: mkdir
+    if (mkdir("/tmp/baize_v2_mkdir_test", 0755) == 0) {
+        rmdir("/tmp/baize_v2_mkdir_test");
+        result |= 16;  // bit 4 = mkdir OK
     }
     
-    // Test 6: can we mkdir?
-    {
-        int r = mkdir("/tmp/baize_v2_dir_test", 0755);
-        if (r == 0) {
-            SAY("T6_MKDIR: created /tmp/baize_v2_dir_test OK");
-            rmdir("/tmp/baize_v2_dir_test");
-        } else {
-            SAY("T6_MKDIR: mkdir failed errno=%d (%s)", errno, strerror(errno));
-        }
+    // Test 6: getcwd
+    char cwd[1024];
+    if (getcwd(cwd, sizeof(cwd))) {
+        result |= 32;  // bit 5 = getcwd OK
     }
     
-    SAY(">>> baize_v2 exiting");
-    return 0;
+    // Test 7: printf reachable? (bare minimum - if this doesn't add to exit code,
+    //          it means printf itself crashes the process)
+    // We can't report this via exit code without printf first.
+    // Instead, we use a known-safe operation.
+    result |= 64;  // bit 6 = reached this point (basic execution sanity)
+    
+    return result;
 }
