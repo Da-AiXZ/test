@@ -3,7 +3,7 @@ name: Build BaizeTester IPA
 on:
   push:
     branches: [main]
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:
 
 jobs:
   build:
@@ -22,26 +22,17 @@ jobs:
       - name: Generate Xcode project
         run: |
           xcodegen generate
-          echo "=== Checking generated project ==="
-          ls -la BaizeTester.xcodeproj/
-          echo "=== Checking xcschemes ==="
-          find BaizeTester.xcodeproj -name "*.xcscheme" 2>/dev/null || echo "No schemes found!"
+          echo "=== Schemes ==="
+          find BaizeTester.xcodeproj -name "*.xcscheme" 2>/dev/null || echo "No schemes"
       
       - name: Show Xcode version
         run: |
           xcodebuild -version
           xcrun --show-sdk-version -sdk iphoneos
       
-      - name: Build IPA
+      - name: Build archive
         run: |
           set -o pipefail
-          
-          # 先验证 xcodebuild 能否读取项目
-          echo "=== Verify project readability ==="
-          xcodebuild -project BaizeTester.xcodeproj -list
-          
-          # 编译
-          echo "=== Building archive ==="
           xcodebuild archive \
             -project BaizeTester.xcodeproj \
             -scheme BaizeTester \
@@ -54,42 +45,25 @@ jobs:
       
       - name: Package IPA
         run: |
-          # 从xcarchive获取.app
           APP_PATH="./build/BaizeTester.xcarchive/Products/Applications/BaizeTester.app"
           
           if [ ! -d "$APP_PATH" ]; then
-            echo "ERROR: .app not found at $APP_PATH"
-            ls -la ./build/BaizeTester.xcarchive/Products/Applications/ 2>/dev/null || echo "No Applications dir"
-            find ./build -name "*.app" 2>/dev/null || echo "No .app found"
+            echo "ERROR: .app not found"
+            find ./build -name "*.app" | head -5
             exit 1
           fi
           
           echo "=== .app contents ==="
           ls -la "$APP_PATH/"
           
-          # 伪签名主二进制（重要！TrollStore需要这个）
-          echo "=== Signing main binary ==="
+          # 伪签名主二进制
+          echo "=== Signing ==="
           ldid2 -SBaizeTester/Entitlements.plist "$APP_PATH/BaizeTester"
-          echo "ldid2 exit code: $?"
-          
-          # 签名所有内嵌的 dylib（Frameworks 目录）
-          if [ -d "$APP_PATH/Frameworks" ]; then
-            echo "=== Signing Frameworks ==="
-            find "$APP_PATH/Frameworks" -name "*.dylib" -o -name "*.framework" | while read f; do
-              if [ -f "$f" ]; then
-                echo "Signing: $f"
-                ldid2 -S "$f" 2>/dev/null || echo "  skip: $f"
-              elif [ -f "$f/$(basename $f .framework)" ]; then
-                bin="$f/$(basename $f .framework)"
-                echo "Signing framework binary: $bin"
-                ldid2 -S "$bin" 2>/dev/null || echo "  skip: $bin"
-              fi
-            done
-          fi
+          echo "ldid2 exit: $?"
           
           # 验证签名
-          echo "=== Verify signature ==="
-          ldid2 -e "$APP_PATH/BaizeTester" 2>&1 | head -30 || echo "ldid2 -e failed"
+          echo "=== Verify ==="
+          ldid2 -e "$APP_PATH/BaizeTester" 2>&1 | head -20
           
           # 打包IPA
           mkdir -p Payload
@@ -97,8 +71,7 @@ jobs:
           cp -R "$APP_PATH" Payload/
           zip -r BaizeTester.ipa Payload/
           
-          echo "IPA created at: $(pwd)/BaizeTester.ipa"
-          ls -la BaizeTester.ipa
+          echo "IPA: $(ls -lh BaizeTester.ipa | awk '{print $5}')"
       
       - name: Upload IPA
         uses: actions/upload-artifact@v4
