@@ -561,20 +561,32 @@ struct ContentView: View {
     // libpython3.13.dylib is LINKED AT BUILD TIME (not dlopen'd at runtime).
     // dyld loads it automatically at app launch, resolving all @rpath
     // dependencies through @executable_path/Frameworks.
-    // dlopen below just returns the already-loaded handle (no-op).
     
     func testPythonEngine() -> (Bool, String) {
         var details: [String] = []
         
         let bundlePath = Bundle.main.bundlePath
-        // dylib install name: @rpath/Python.framework/Python
-        // rpath: @executable_path/Frameworks
-        // resolved path: {APP}/Frameworks/Python.framework/Python
         let frameworksPath = bundlePath + "/Frameworks"
         let pyDylib = frameworksPath + "/Python.framework/Python"
         let stdlibPath = bundlePath + "/lib/python3.13"
+        let crashLogPath = "/tmp/baize_py_crash.txt"
+        
+        // ---- Crash-safe progress logger ----
+        // Writes step number BEFORE each potentially-crashing operation.
+        // After crash+relaunch, this file tells us which step crashed.
+        func logStep(_ step: Int, _ msg: String) {
+            try? msg.write(toFile: crashLogPath, atomically: true, encoding: .utf8)
+            details.append(msg)
+        }
+        
+        // Check for previous crash
+        if let prevStep = try? String(contentsOfFile: crashLogPath, encoding: .utf8), !prevStep.isEmpty {
+            details.append("⚠️ 上次崩溃位置: \(prevStep)")
+        }
+        try? "".write(toFile: crashLogPath, atomically: true, encoding: .utf8)
         
         details.append("📦 Bundle: \(String(bundlePath.suffix(40)))")
+        logStep(0, "Step 0: 开始检查...")
         
         // ---- Pre-flight checks ----
         
@@ -607,19 +619,16 @@ struct ContentView: View {
         details.append("   site.py: \(hasSite ? "✅" : "❌")")
         
         // ---- Get Python handle ----
-        // The dylib was already loaded by dyld at app launch (linked at build time).
-        // dlopen returns the existing handle. RTLD_NOLOAD would also work,
-        // but RTLD_NOW|RTLD_GLOBAL is safer as fallback if dyld didn't preload.
-        details.append("🔧 正在 dlopen libpython3.13.dylib...")
-        details.append("   (dylib 已在启动时由 dyld 自动加载，dlopen 仅获取句柄)")
-        
+        logStep(1, "Step 1: dlopen...")
         guard let pyHandle = dlopen(pyDylib, RTLD_NOW | RTLD_GLOBAL) else {
             let err = dlerror().map { String(cString: $0) } ?? "未知"
             return (false, "❌ dlopen libpython 失败: \(err)\n\(details.joined(separator: "\n"))")
         }
         details.append("🔓 获取 Python 句柄成功")
+        defer { dlclose(pyHandle) }
         
-        // Step 4: dlsym Python C API functions
+        // dlsym
+        logStep(2, "Step 2: dlsym...")
         typealias VoidFunc = @convention(c) () -> Void
         typealias IntFunc = @convention(c) () -> Int32
         typealias IntStrFunc = @convention(c) (UnsafePointer<CChar>) -> Int32
@@ -653,7 +662,8 @@ struct ContentView: View {
         
         details.append("🔍 dlsym 6个 API 全部成功")
         
-        // Step 5: Set Python environment variables
+        // Set env vars
+        logStep(3, "Step 3: 设置环境变量...")
         setenv("PYTHONHOME", bundlePath, 1)
         setenv("PYTHONPATH", stdlibPath, 1)
         setenv("PYTHONDONTWRITEBYTECODE", "1", 1)
@@ -662,14 +672,15 @@ struct ContentView: View {
         details.append("🏠 PYTHONHOME=\(String(bundlePath.suffix(35)))")
         details.append("📂 PYTHONPATH=lib/python3.13")
         
-        // Step 6: Initialize Python
-        details.append("🚀 正在 Py_Initialize()...")
+        // Initialize Python — CRASH LIKELY HERE if stdlib incomplete
+        logStep(4, "Step 4: Py_Initialize()...")
         Py_Initialize()
         
         if Py_IsInitialized() == 0 {
             return (false, "❌ Py_Initialize 后 Py_IsInitialized 返回 0\n\(details.joined(separator: "\n"))")
         }
         details.append("✅ Py_Initialize 成功")
+        logStep(5, "Step 5: 运行 Python 代码...")
         
         // Step 7: Get version
         let version = String(cString: Py_GetVersion())
@@ -720,13 +731,14 @@ with open('/tmp/py_engine_test.txt', 'w') as f:
             details.append("⚠️ 输出文件不存在（Python 可能无权写入 /tmp/）")
         }
         
-        // Step 10: Finalize
+        // Finalize
+        logStep(6, "Step 6: Py_FinalizeEx...")
         Py_FinalizeEx()
         details.append("🔚 Py_FinalizeEx 完成")
         
         // Cleanup
         dlclose(pyHandle)
-        details.append("🧹 dylib 句柄已释放")
+        try? "SUCCESS".write(toFile: crashLogPath, atomically: true, encoding: .utf8)
         
         let hasOutput = details.contains(where: { $0.contains("PY_OK") })
         return (hasOutput, details.joined(separator: "\n"))

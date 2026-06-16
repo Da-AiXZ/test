@@ -44,15 +44,35 @@ jobs:
           mkdir -p python-ios-full
           tar xzf python-ios.tar.gz -C python-ios-full
           
+          echo "=== Exploring archive structure ==="
+          find python-ios-full -name "python3.13" -type d | head -10
+          echo "--- lib/python3.13/ file count ---"
+          find python-ios-full/Python.xcframework/ios-arm64/lib/python3.13 -type f 2>/dev/null | wc -l
+          echo "--- lib-arm64/python3.13/ file count ---"
+          find python-ios-full/Python.xcframework/ios-arm64/lib-arm64/python3.13 -type f 2>/dev/null | wc -l
+          
           echo "=== Copying dylibs for linking ==="
           mkdir -p python-ios
           cp -v python-ios-full/Python.xcframework/ios-arm64/lib/*.dylib python-ios/
           ls -lh python-ios/
           
-          echo "=== Copying stdlib ==="
-          mkdir -p python-ios/lib
-          cp -R python-ios-full/Python.xcframework/ios-arm64/lib-arm64/python3.13 python-ios/lib/
-          echo "Stdlib files: $(find python-ios/lib/python3.13 -type f | wc -l)"
+          echo "=== Copying FULL stdlib (both .py + .so) ==="
+          mkdir -p python-ios/lib/python3.13
+          # 1. Copy Python source files (.py) - required for encodings, site, os, etc.
+          if [ -d python-ios-full/Python.xcframework/ios-arm64/lib/python3.13 ]; then
+            cp -R python-ios-full/Python.xcframework/ios-arm64/lib/python3.13/* python-ios/lib/python3.13/
+            echo "Copied from lib/python3.13/"
+          fi
+          # 2. Copy ARM64 compiled extensions (.so) - overwrites/merges
+          if [ -d python-ios-full/Python.xcframework/ios-arm64/lib-arm64/python3.13 ]; then
+            cp -R python-ios-full/Python.xcframework/ios-arm64/lib-arm64/python3.13/* python-ios/lib/python3.13/
+            echo "Copied from lib-arm64/python3.13/"
+          fi
+          echo "Total stdlib files: $(find python-ios/lib/python3.13 -type f | wc -l)"
+          echo "--- encodings ---"
+          ls python-ios/lib/python3.13/encodings/ 2>/dev/null | head -5 || echo "MISSING!"
+          echo "--- site.py ---"
+          ls -la python-ios/lib/python3.13/site.py 2>/dev/null || echo "MISSING!"
           du -sh python-ios/
       
       # Build with Python linked at compile time (not dlopen'd at runtime!)
