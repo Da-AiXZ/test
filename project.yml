@@ -22,6 +22,8 @@ targets:
     sources:
       - path: BaizeTester
         type: group
+        excludes:
+          - "*.c"
     settings:
       base:
         INFOPLIST_FILE: BaizeTester/Info.plist
