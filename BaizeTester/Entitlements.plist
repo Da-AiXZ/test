@@ -2,32 +2,23 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- 核心：突破iOS沙盒，允许访问整个文件系统 -->
 	<key>com.apple.private.security.no-sandbox</key>
 	<true/>
-	
-	<!-- 必须配合no-sandbox使用，标记为平台应用 -->
 	<key>platform-application</key>
 	<true/>
-	
-	<!-- 允许访问AppData容器 -->
 	<key>com.apple.private.security.storage.AppDataContainers</key>
 	<true/>
-	
-	<!-- 允许管理persona（进程身份） -->
 	<key>com.apple.private.persona-mgmt</key>
 	<true/>
-	
-	<!-- 允许调试其他进程 -->
 	<key>get-task-allow</key>
 	<true/>
-	
-	<!-- 允许创建子进程 -->
 	<key>com.apple.private.cs.debugger</key>
 	<true/>
-	
-	<!-- 允许动态链接 -->
 	<key>com.apple.private.security.allow-dyld-environment-variables</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+	<key>com.apple.security.cs.disable-library-validation</key>
 	<true/>
 </dict>
 </plist>
