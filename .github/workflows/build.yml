@@ -46,8 +46,8 @@ jobs:
           
           echo "=== Exploring archive structure ==="
           find python-ios-full -name "python3.13" -type d | head -10
-          echo "--- lib/python3.13/ file count ---"
-          find python-ios-full/Python.xcframework/ios-arm64/lib/python3.13 -type f 2>/dev/null | wc -l
+          echo "--- XCFramework root lib/python3.13/ file count ---"
+          find python-ios-full/Python.xcframework/lib/python3.13 -type f 2>/dev/null | wc -l
           echo "--- lib-arm64/python3.13/ file count ---"
           find python-ios-full/Python.xcframework/ios-arm64/lib-arm64/python3.13 -type f 2>/dev/null | wc -l
           
@@ -58,15 +58,15 @@ jobs:
           
           echo "=== Copying FULL stdlib (both .py + .so) ==="
           mkdir -p python-ios/lib/python3.13
-          # 1. Copy Python source files (.py) - required for encodings, site, os, etc.
-          if [ -d python-ios-full/Python.xcframework/ios-arm64/lib/python3.13 ]; then
-            cp -R python-ios-full/Python.xcframework/ios-arm64/lib/python3.13/* python-ios/lib/python3.13/
-            echo "Copied from lib/python3.13/"
+          # 1. Copy Python source files (.py) — from XCFramework root (cross-platform)
+          if [ -d python-ios-full/Python.xcframework/lib/python3.13 ]; then
+            cp -R python-ios-full/Python.xcframework/lib/python3.13/* python-ios/lib/python3.13/
+            echo "Copied from Python.xcframework/lib/python3.13/ (.py source)"
           fi
-          # 2. Copy ARM64 compiled extensions (.so) - overwrites/merges
+          # 2. Copy ARM64 compiled extensions (.so) — overwrites/merges
           if [ -d python-ios-full/Python.xcframework/ios-arm64/lib-arm64/python3.13 ]; then
             cp -R python-ios-full/Python.xcframework/ios-arm64/lib-arm64/python3.13/* python-ios/lib/python3.13/
-            echo "Copied from lib-arm64/python3.13/"
+            echo "Copied from ios-arm64/lib-arm64/python3.13/ (.so extensions)"
           fi
           echo "Total stdlib files: $(find python-ios/lib/python3.13 -type f | wc -l)"
           echo "--- encodings ---"

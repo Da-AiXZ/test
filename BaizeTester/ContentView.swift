@@ -107,9 +107,27 @@ struct ContentView: View {
             .navigationTitle("白泽 - 可行性测试")
             .onAppear {
                 collectSystemInfo()
+                loadPersistedCrashLog()
             }
         }
         .navigationViewStyle(StackNavigationViewStyle())
+    }
+    
+    // MARK: - Crash Log Persistence
+    
+    var crashLogURL: URL {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        return docs.appendingPathComponent("baize_py_crash.txt")
+    }
+    
+    func loadPersistedCrashLog() {
+        guard let content = try? String(contentsOf: crashLogURL, encoding: .utf8),
+              !content.isEmpty else { return }
+        // Find Python test index and restore previous crash info
+        if let idx = testResults.firstIndex(where: { $0.name == "🐍 Python 引擎" }) {
+            testResults[idx].detail = "⚠️ 上次崩溃日志:\n\(content)"
+            testResults[idx].status = .failed
+        }
     }
     
     // MARK: - System Info Section
@@ -569,24 +587,21 @@ struct ContentView: View {
         let frameworksPath = bundlePath + "/Frameworks"
         let pyDylib = frameworksPath + "/Python.framework/Python"
         let stdlibPath = bundlePath + "/lib/python3.13"
-        let crashLogPath = "/tmp/baize_py_crash.txt"
+        let crashLogPath = crashLogURL.path
         
         // ---- Crash-safe progress logger ----
-        // Writes step number BEFORE each potentially-crashing operation.
-        // After crash+relaunch, this file tells us which step crashed.
-        func logStep(_ step: Int, _ msg: String) {
-            try? msg.write(toFile: crashLogPath, atomically: true, encoding: .utf8)
-            details.append(msg)
+        // Writes to PERSISTENT file so it survives app restart after crash
+        func persistLog(_ text: String) {
+            let all = details.joined(separator: "\n") + "\n" + text
+            try? all.write(toFile: crashLogPath, atomically: true, encoding: .utf8)
+            details.append(text)
         }
         
-        // Check for previous crash
-        if let prevStep = try? String(contentsOfFile: crashLogPath, encoding: .utf8), !prevStep.isEmpty {
-            details.append("⚠️ 上次崩溃位置: \(prevStep)")
-        }
+        // Clear previous crash log on fresh run
         try? "".write(toFile: crashLogPath, atomically: true, encoding: .utf8)
         
         details.append("📦 Bundle: \(String(bundlePath.suffix(40)))")
-        logStep(0, "Step 0: 开始检查...")
+        persistLog("Step 0: 开始检查...")
         
         // ---- Pre-flight checks ----
         
@@ -617,9 +632,12 @@ struct ContentView: View {
         details.append("   encodings/__init__.py: \(hasEncodings ? "✅" : "❌")")
         details.append("   os.py: \(hasOs ? "✅" : "❌")")
         details.append("   site.py: \(hasSite ? "✅" : "❌")")
+        // Persist pre-flight results NOW (before any crash-prone operation)
+        let preflightLog = details.joined(separator: "\n")
+        try? preflightLog.write(toFile: crashLogPath, atomically: true, encoding: .utf8)
         
         // ---- Get Python handle ----
-        logStep(1, "Step 1: dlopen...")
+        persistLog("Step 1: dlopen...")
         guard let pyHandle = dlopen(pyDylib, RTLD_NOW | RTLD_GLOBAL) else {
             let err = dlerror().map { String(cString: $0) } ?? "未知"
             return (false, "❌ dlopen libpython 失败: \(err)\n\(details.joined(separator: "\n"))")
@@ -628,7 +646,7 @@ struct ContentView: View {
         defer { dlclose(pyHandle) }
         
         // dlsym
-        logStep(2, "Step 2: dlsym...")
+        persistLog("Step 2: dlsym...")
         typealias VoidFunc = @convention(c) () -> Void
         typealias IntFunc = @convention(c) () -> Int32
         typealias IntStrFunc = @convention(c) (UnsafePointer<CChar>) -> Int32
@@ -663,7 +681,7 @@ struct ContentView: View {
         details.append("🔍 dlsym 6个 API 全部成功")
         
         // Set env vars
-        logStep(3, "Step 3: 设置环境变量...")
+        persistLog("Step 3: 设置环境变量...")
         setenv("PYTHONHOME", bundlePath, 1)
         setenv("PYTHONPATH", stdlibPath, 1)
         setenv("PYTHONDONTWRITEBYTECODE", "1", 1)
@@ -673,14 +691,14 @@ struct ContentView: View {
         details.append("📂 PYTHONPATH=lib/python3.13")
         
         // Initialize Python — CRASH LIKELY HERE if stdlib incomplete
-        logStep(4, "Step 4: Py_Initialize()...")
+        persistLog("Step 4: Py_Initialize()...")
         Py_Initialize()
         
         if Py_IsInitialized() == 0 {
             return (false, "❌ Py_Initialize 后 Py_IsInitialized 返回 0\n\(details.joined(separator: "\n"))")
         }
         details.append("✅ Py_Initialize 成功")
-        logStep(5, "Step 5: 运行 Python 代码...")
+        persistLog("Step 5: 运行 Python 代码...")
         
         // Step 7: Get version
         let version = String(cString: Py_GetVersion())
@@ -732,7 +750,7 @@ with open('/tmp/py_engine_test.txt', 'w') as f:
         }
         
         // Finalize
-        logStep(6, "Step 6: Py_FinalizeEx...")
+        persistLog("Step 6: Py_FinalizeEx...")
         Py_FinalizeEx()
         details.append("🔚 Py_FinalizeEx 完成")
         
