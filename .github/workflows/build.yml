@@ -20,11 +20,21 @@ jobs:
         run: brew install ldid
       
       - name: Generate Xcode project
-        run: xcodegen generate
+        run: |
+          xcodegen generate
+          echo "=== Checking generated project ==="
+          ls -la BaizeTester.xcodeproj/
+          echo "=== Checking xcschemes ==="
+          find BaizeTester.xcodeproj -name "*.xcscheme" 2>/dev/null || echo "No schemes found!"
       
       - name: Build IPA
         run: |
+          # 先验证 xcodebuild 能否读取项目
+          echo "=== Verify project readability ==="
+          xcodebuild -project BaizeTester.xcodeproj -list 2>&1 || true
+          
           # 编译
+          echo "=== Building archive ==="
           xcodebuild archive \
             -project BaizeTester.xcodeproj \
             -scheme BaizeTester \

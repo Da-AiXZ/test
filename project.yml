@@ -3,13 +3,14 @@ options:
   bundleIdPrefix: com.baize.tester
   deploymentTarget:
     iOS: "15.0"
+  createIntermediateGroups: true
 
 settings:
   base:
     SWIFT_VERSION: "5.0"
     IPHONEOS_DEPLOYMENT_TARGET: "15.0"
     CODE_SIGN_STYLE: Manual
-    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_IDENTITY: ""
     CODE_SIGNING_REQUIRED: NO
     CODE_SIGNING_ALLOWED: NO
 
@@ -18,10 +19,20 @@ targets:
     type: application
     platform: iOS
     sources:
-      - BaizeTester
+      - path: BaizeTester
+        type: group
     settings:
       base:
         INFOPLIST_FILE: BaizeTester/Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: com.baize.tester
         CODE_SIGN_ENTITLEMENTS: BaizeTester/Entitlements.plist
-    dependencies: []
+
+schemes:
+  BaizeTester:
+    build:
+      targets:
+        BaizeTester: all
+    run:
+      config: Release
+    archive:
+      config: Release
