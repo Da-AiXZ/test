@@ -2,55 +2,36 @@
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
-#include <sys/stat.h>
 
-// Debug log file (write to a path we hope works)
-void log_debug(const char *msg) {
-    FILE *lf = fopen("/tmp/baize_v2_debug.txt", "a");
-    if (lf) {
-        fprintf(lf, "[%d] %s\n", getpid(), msg);
-        fclose(lf);
-    }
-}
+// All output via stdout (printf) so parent can capture via pipe
+#define SAY(fmt, ...) printf(fmt "\n", ##__VA_ARGS__); fflush(stdout)
 
 int main(int argc, char **argv) {
-    log_debug("baize_v2 started");
+    SAY(">>> baize_v2 started pid=%d", getpid());
     
-    // Test 1: write to /tmp/baize_v2_test.txt
+    // Test 1: write to /tmp/
     {
         const char *path = "/tmp/baize_v2_test.txt";
         FILE *f = fopen(path, "w");
         if (!f) {
-            char errmsg[256];
-            snprintf(errmsg, sizeof(errmsg), "Test1 fopen FAIL: %s (errno=%d)", path, errno);
-            log_debug(errmsg);
+            SAY("T1_FAIL: fopen(%s) errno=%d (%s)", path, errno, strerror(errno));
         } else {
             fprintf(f, "BAIZE_V2_OK pid=%d\n", getpid());
-            fflush(f);
-            fsync(fileno(f));
             fclose(f);
-            char okmsg[256];
-            snprintf(okmsg, sizeof(okmsg), "Test1 write OK: %s", path);
-            log_debug(okmsg);
+            SAY("T1_OK: wrote %s", path);
         }
     }
     
-    // Test 2: write to /var/mobile/Documents/baize_v2_test.txt
+    // Test 2: write to /var/mobile/Documents/
     {
         const char *path = "/var/mobile/Documents/baize_v2_test.txt";
         FILE *f = fopen(path, "w");
         if (!f) {
-            char errmsg[256];
-            snprintf(errmsg, sizeof(errmsg), "Test2 fopen FAIL: %s (errno=%d)", path, errno);
-            log_debug(errmsg);
+            SAY("T2_FAIL: fopen(%s) errno=%d (%s)", path, errno, strerror(errno));
         } else {
             fprintf(f, "BAIZE_V2_DOCUMENTS_OK pid=%d\n", getpid());
-            fflush(f);
-            fsync(fileno(f));
             fclose(f);
-            char okmsg[256];
-            snprintf(okmsg, sizeof(okmsg), "Test2 write OK: %s", path);
-            log_debug(okmsg);
+            SAY("T2_OK: wrote %s", path);
         }
     }
     
@@ -59,23 +40,44 @@ int main(int argc, char **argv) {
         const char *path = "/private/tmp/baize_v2_test.txt";
         FILE *f = fopen(path, "w");
         if (!f) {
-            char errmsg[256];
-            snprintf(errmsg, sizeof(errmsg), "Test3 fopen FAIL: %s (errno=%d)", path, errno);
-            log_debug(errmsg);
+            SAY("T3_FAIL: fopen(%s) errno=%d (%s)", path, errno, strerror(errno));
         } else {
             fprintf(f, "BAIZE_V2_PRIVATE_TMP_OK pid=%d\n", getpid());
-            fflush(f);
-            fsync(fileno(f));
             fclose(f);
-            char okmsg[256];
-            snprintf(okmsg, sizeof(okmsg), "Test3 write OK: %s", path);
-            log_debug(okmsg);
+            SAY("T3_OK: wrote %s", path);
         }
     }
     
-    // Test 4: list /var/mobile/ (use execv of /bin/ls style - skip popen, no shell)
-    log_debug("Test4: skipping popen (no /bin/sh on iOS)");
+    // Test 4: what does getcwd() say?
+    {
+        char cwd[1024];
+        if (getcwd(cwd, sizeof(cwd))) {
+            SAY("T4_CWD: %s", cwd);
+        } else {
+            SAY("T4_CWD: getcwd failed errno=%d", errno);
+        }
+    }
     
-    log_debug("baize_v2 exiting");
+    // Test 5: can we access() /tmp/ ?
+    {
+        if (access("/tmp/", W_OK) == 0) {
+            SAY("T5_ACCESS: /tmp/ is writable");
+        } else {
+            SAY("T5_ACCESS: /tmp/ NOT writable errno=%d (%s)", errno, strerror(errno));
+        }
+    }
+    
+    // Test 6: can we mkdir?
+    {
+        int r = mkdir("/tmp/baize_v2_dir_test", 0755);
+        if (r == 0) {
+            SAY("T6_MKDIR: created /tmp/baize_v2_dir_test OK");
+            rmdir("/tmp/baize_v2_dir_test");
+        } else {
+            SAY("T6_MKDIR: mkdir failed errno=%d (%s)", errno, strerror(errno));
+        }
+    }
+    
+    SAY(">>> baize_v2 exiting");
     return 0;
 }

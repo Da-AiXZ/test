@@ -388,7 +388,7 @@ struct ContentView: View {
         if !FileManager.default.fileExists(atPath: embeddedBinary) {
             return (false, "❌ 二进制未嵌入 App: \(embeddedBinary)")
         }
-        details.append("📦 找到嵌入二进制: \(String(embeddedBinary.suffix(40)))")
+        details.append("📦 找到嵌入二进制")
         
         // Step 2: Copy to /tmp/ (App bundle is read-only)
         let tmpBinary = "/tmp/baize_v2"
@@ -409,7 +409,16 @@ struct ContentView: View {
         }
         details.append("🔑 chmod 755 成功")
         
-        // Step 4: posix_spawn
+        // Step 4: Create pipe for stdout capture
+        var pipeFds: [Int32] = [0, 0]
+        if pipe(&pipeFds) != 0 {
+            return (false, "❌ pipe() 失败: \(String(cString: strerror(errno)))")
+        }
+        let pipeRead = pipeFds[0]
+        let pipeWrite = pipeFds[1]
+        details.append("🔗 pipe 创建成功 (r=\(pipeRead), w=\(pipeWrite))")
+        
+        // Step 5: posix_spawn with stdout redirect
         let args = [tmpBinary]
         var pid: pid_t = 0
         
@@ -419,52 +428,77 @@ struct ContentView: View {
         var cargv: [UnsafeMutablePointer<CChar>?] = argv.map { UnsafeMutablePointer<CChar>($0) }
         cargv.append(nil)
         
-        let spawnRet = posix_spawn(&pid, tmpBinary, nil, nil, &cargv, nil)
+        var fileActions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&fileActions)
+        posix_spawn_file_actions_adddup2(&fileActions, pipeWrite, STDOUT_FILENO)
+        posix_spawn_file_actions_addclose(&fileActions, pipeRead)
+        
+        var spawnAttr: posix_spawnattr_t?
+        posix_spawnattr_init(&spawnAttr)
+        
+        let spawnRet = posix_spawn(&pid, tmpBinary, &fileActions, &spawnAttr, &cargv, nil)
+        
+        // Close write end in parent (must do this before reading)
+        close(pipeWrite)
+        posix_spawn_file_actions_destroy(&fileActions)
+        posix_spawnattr_destroy(&spawnAttr)
         
         if spawnRet != 0 {
+            close(pipeRead)
             let err = String(cString: strerror(spawnRet))
-            return (false, "❌ posix_spawn 失败: \(err) (errno: \(spawnRet))\n\(details.joined(separator: "\n"))")
+            return (false, "❌ posix_spawn 失败: \(err) (errno: \(spawnRet))")
         }
         
-        // Step 5: Wait for completion
+        // Step 6: Read stdout from pipe while process runs
+        var stdoutData = Data()
+        let bufferSize = 4096
+        var buffer = [UInt8](repeating: 0, count: bufferSize)
+        var totalBytes = 0
+        
+        while true {
+            let bytesRead = read(pipeRead, &buffer, bufferSize)
+            if bytesRead <= 0 { break }
+            stdoutData.append(contentsOf: buffer[0..<bytesRead])
+            totalBytes += bytesRead
+        }
+        close(pipeRead)
+        details.append("📤 捕获 stdout: \(totalBytes) bytes")
+        
+        // Step 7: Wait for process
         var status: Int32 = 0
         waitpid(pid, &status, 0)
         let exitCode = WEXITSTATUS(status)
         details.append("🟢 子进程退出 (PID: \(pid), exit: \(exitCode))")
         
-        // Step 6: Verify output files
+        // Step 8: Parse stdout
+        let stdoutStr = String(data: stdoutData, encoding: .utf8) ?? "<binary output>"
+        details.append("--- 子进程 stdout ---")
+        for line in stdoutStr.components(separatedBy: "\n") {
+            if !line.isEmpty {
+                details.append("  \(line)")
+            }
+        }
+        details.append("--- stdout 结束 ---")
+        
+        // Step 9: Also check file outputs (may still work if child did write)
         let testFile1 = "/tmp/baize_v2_test.txt"
-        if let content = try? String(contentsOfFile: testFile1, encoding: .utf8) {
-            details.append("✅ /tmp/baize_v2_test.txt: \(content.trimmingCharacters(in: .whitespacesAndNewlines))")
+        if FileManager.default.fileExists(atPath: testFile1) {
+            if let content = try? String(contentsOfFile: testFile1, encoding: .utf8) {
+                details.append("✅ 文件 /tmp/baize_v2_test.txt: \(content.trimmingCharacters(in: .whitespacesAndNewlines))")
+            }
             try? FileManager.default.removeItem(atPath: testFile1)
         } else {
-            details.append("⚠️ /tmp/baize_v2_test.txt 不存在")
+            details.append("⚠️ 文件 /tmp/baize_v2_test.txt 不存在")
         }
         
         let testFile2 = "/var/mobile/Documents/baize_v2_test.txt"
-        if let content = try? String(contentsOfFile: testFile2, encoding: .utf8) {
-            details.append("✅ /var/mobile/Documents/baize_v2_test.txt: \(content.trimmingCharacters(in: .whitespacesAndNewlines))")
+        if FileManager.default.fileExists(atPath: testFile2) {
+            if let content = try? String(contentsOfFile: testFile2, encoding: .utf8) {
+                details.append("✅ 文件 /var/mobile/Documents/baize_v2_test.txt: \(content.trimmingCharacters(in: .whitespacesAndNewlines))")
+            }
             try? FileManager.default.removeItem(atPath: testFile2)
         } else {
-            details.append("⚠️ /var/mobile/Documents/baize_v2_test.txt 不存在")
-        }
-        
-        // Check alternative paths
-        let testFile3 = "/private/tmp/baize_v2_test.txt"
-        if let content = try? String(contentsOfFile: testFile3, encoding: .utf8) {
-            details.append("✅ /private/tmp/baize_v2_test.txt: \(content.trimmingCharacters(in: .whitespacesAndNewlines))")
-            try? FileManager.default.removeItem(atPath: testFile3)
-        } else {
-            details.append("⚠️ /private/tmp/baize_v2_test.txt 不存在")
-        }
-        
-        // Check debug log
-        let debugLog = "/tmp/baize_v2_debug.txt"
-        if let content = try? String(contentsOfFile: debugLog, encoding: .utf8) {
-            details.append("📋 调试日志:\n\(content.trimmingCharacters(in: .whitespacesAndNewlines))")
-            try? FileManager.default.removeItem(atPath: debugLog)
-        } else {
-            details.append("⚠️ /tmp/baize_v2_debug.txt 不存在（无法获取调试信息）")
+            details.append("⚠️ 文件 /var/mobile/Documents/baize_v2_test.txt 不存在")
         }
         
         // Cleanup
