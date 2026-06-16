@@ -59,7 +59,7 @@ struct ContentView: View {
         TestResult(name: "🧬 dlopen 动态库执行", 
                    description: "v6: 嵌入.dylib→dlopen→dlsym调用（运行在App进程内）"),
         TestResult(name: "🐍 Python 引擎",
-                   description: "v9: dlopen libpython3.13→Py_Initialize→执行Python代码"),
+                   description: "v10: dlopen Python → 工具链验证(json/ctypes/subprocess/http等)"),
     ]
     @State private var isRunningAll = false
     
@@ -704,50 +704,134 @@ struct ContentView: View {
         let version = String(cString: Py_GetVersion())
         details.append("🐍 版本: \(version)")
         
-        // Step 8: Run Python code that writes output to a file
+        // Step 8: Python 工具链验证
         let testScript = """
-import sys, os
-ver = sys.version
-pm = sys.prefix + "|" + (sys.executable or "none")
+import sys, os, json, shutil, tempfile, pathlib, hashlib, base64, re
 
-# Write results to file (stdout may not be visible)
-with open('/tmp/py_engine_test.txt', 'w') as f:
-    f.write('PY_OK:' + ver.split()[0] + '\\n')
-    f.write('PREFIX:' + sys.prefix + '\\n')
-    f.write('EXEC:' + str(sys.executable) + '\\n')
-    try:
-        items = os.listdir('/var/mobile/')
-        f.write('LS_VAR:' + ','.join(items[:5]) + '\\n')
-    except Exception as e:
-        f.write('LS_ERR:' + str(e) + '\\n')
-    try:
-        items2 = os.listdir('/tmp/')
-        f.write('LS_TMP:' + str(len(items2)) + ' items\\n')
-    except Exception as e:
-        f.write('TMP_ERR:' + str(e) + '\\n')
+results = []
+def ok(name, detail=""):
+    results.append(f"OK:{name}" + (f":{detail}" if detail else ""))
+def fail(name, err=""):
+    results.append(f"FAIL:{name}:" + str(err)[:80])
+
+# --- 1. JSON + 文件读写 ---
+try:
+    tp = '/tmp/baize_tool.json'
+    with open(tp, 'w') as f: json.dump({'baize': True}, f)
+    with open(tp, 'r') as f: assert json.load(f) == {'baize': True}
+    os.remove(tp)
+    ok("json_rw")
+except Exception as e: fail("json_rw", e)
+
+# --- 2. 目录操作 (tempfile + shutil) ---
+try:
+    td = tempfile.mkdtemp(dir='/tmp')
+    with open(os.path.join(td, 'x.txt'), 'w') as f: f.write('ok')
+    shutil.rmtree(td)
+    ok("dir_ops")
+except Exception as e: fail("dir_ops", e)
+
+# --- 3. pathlib ---
+try:
+    p = pathlib.Path('/var/mobile/Documents')
+    ok("pathlib", f"exists={p.exists()}")
+except Exception as e: fail("pathlib", e)
+
+# --- 4. hashlib ---
+try:
+    h = hashlib.sha256(b'baize').hexdigest()[:12]
+    ok("hashlib", h)
+except Exception as e: fail("hashlib", e)
+
+# --- 5. re ---
+try:
+    m = re.search(r'(\\\\d+)', 'abc123def')
+    ok("re", f"match={m.group(1)}")
+except Exception as e: fail("re", e)
+
+# --- 6. base64 ---
+try:
+    enc = base64.b64encode(b'baize').decode()
+    ok("base64", enc)
+except Exception as e: fail("base64", e)
+
+# --- 7. ctypes (系统 dylib) ---
+try:
+    import ctypes
+    lib = ctypes.CDLL('libSystem.dylib')
+    ok("ctypes_sys", f"libSystem={lib}")
+except Exception as e: fail("ctypes_sys", e)
+
+# --- 8. subprocess ---
+try:
+    import subprocess
+    r = subprocess.run(['/usr/bin/true'], capture_output=True, timeout=5)
+    ok("subprocess", f"rc={r.returncode}")
+except FileNotFoundError:
+    fail("subprocess","binary_not_found")
+except Exception as e: fail("subprocess", e)
+
+# --- 9. urllib HTTP ---
+try:
+    import urllib.request
+    r = urllib.request.urlopen('https://httpbin.org/get', timeout=10)
+    ok("urllib", f"status={r.status}")
+except Exception as e: fail("urllib", e)
+
+# --- 10. ls /var/mobile/ ---
+try:
+    items = os.listdir('/var/mobile/')
+    ok("ls_var", f"{len(items)} items")
+except Exception as e: fail("ls_var", e)
+
+# --- 11. ls /tmp/ ---
+try:
+    items2 = os.listdir('/tmp/')
+    ok("ls_tmp", f"{len(items2)} items")
+except Exception as e: fail("ls_tmp", e)
+
+# --- 12. Python 版本 ---
+ok("py_ver", sys.version.split()[0])
+ok("py_prefix", str(pathlib.Path(sys.prefix).name))
+ok("py_exec", str(sys.executable)[-30:])
+
+# Write results
+with open('/tmp/py_tool_test.txt', 'w') as f:
+    f.write('$$$' + '\\n'.join(results))
 """
         
         let rc = PyRun_SimpleString(testScript)
         if rc != 0 {
             PyErr_Print()
-            return (false, "❌ PyRun_SimpleString 失败 (rc=\(rc))\n\(details.joined(separator: "\n"))")
+            return (false, "❌ Python 脚本异常 (rc=\(rc))\n\(details.joined(separator: "\n"))")
         }
-        details.append("✅ Python 脚本执行成功 (rc=0)")
+        details.append("✅ Python 工具链测试完成")
         
-        // Step 9: Read output file
-        let outputPath = "/tmp/py_engine_test.txt"
-        if let output = try? String(contentsOfFile: outputPath, encoding: .utf8) {
-            details.append("--- Python 输出 ---")
-            for line in output.components(separatedBy: "\n") {
-                if !line.isEmpty {
-                    details.append("  \(line)")
-                }
+        // Step 9: Parse results
+        let outputPath = "/tmp/py_tool_test.txt"
+        var okCount = 0
+        var failCount = 0
+        var allResults: [(String, Bool)] = []
+        
+        if let output = try? String(contentsOfFile: outputPath, encoding: .utf8),
+           output.hasPrefix("$$$") {
+            let lines = output.dropFirst(3).components(separatedBy: "\n")
+            for line in lines where !line.isEmpty {
+                let passed = line.hasPrefix("OK:")
+                let label = passed ? String(line.dropFirst(3)) : String(line.dropFirst(5))
+                allResults.append((label, passed))
+                if passed { okCount += 1 } else { failCount += 1 }
             }
-            details.append("--- 结束 ---")
             try? FileManager.default.removeItem(atPath: outputPath)
-        } else {
-            details.append("⚠️ 输出文件不存在（Python 可能无权写入 /tmp/）")
         }
+        
+        details.append("--- 工具链验证结果 ---")
+        details.append("✅ \(okCount) 项通过  ❌ \(failCount) 项失败")
+        details.append("")
+        for (label, passed) in allResults {
+            details.append(passed ? "  ✅ \(label)" : "  ❌ \(label)")
+        }
+        details.append("--- 结束 ---")
         
         // Finalize
         persistLog("Step 6: Py_FinalizeEx...")
@@ -758,8 +842,8 @@ with open('/tmp/py_engine_test.txt', 'w') as f:
         dlclose(pyHandle)
         try? FileManager.default.removeItem(atPath: crashLogPath)
         
-        let hasOutput = details.contains(where: { $0.contains("PY_OK") })
-        return (hasOutput, details.joined(separator: "\n"))
+        // count any useful pass
+        return (okCount > 0, details.joined(separator: "\n"))
     }
 }
 
